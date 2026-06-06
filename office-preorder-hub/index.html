@@ -1,0 +1,1375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Office Pre-Order Hub</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        :root {
+            --bg-primary: #ffffff;
+            --bg-secondary: #f3f4f6;
+            --text-primary: #111827;
+            --text-secondary: #6b7280;
+            --border-color: #e5e7eb;
+            --accent-color: #3b82f6;
+            --accent-hover: #2563eb;
+            --success-color: #10b981;
+            --danger-color: #ef4444;
+            --warning-color: #f59e0b;
+        }
+        
+        .dark {
+            --bg-primary: #1f2937;
+            --bg-secondary: #111827;
+            --text-primary: #f9fafb;
+            --text-secondary: #9ca3af;
+            --border-color: #374151;
+            --accent-color: #60a5fa;
+            --accent-hover: #3b82f6;
+        }
+        
+        body {
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            transition: background-color 0.3s, color 0.3s;
+        }
+        
+        .card {
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border-color);
+        }
+        
+        .bg-secondary {
+            background-color: var(--bg-secondary);
+        }
+        
+        .text-secondary {
+            color: var(--text-secondary);
+        }
+        
+        .border-custom {
+            border-color: var(--border-color);
+        }
+        
+        .btn-primary {
+            background-color: var(--accent-color);
+        }
+        
+        .btn-primary:hover {
+            background-color: var(--accent-hover);
+        }
+        
+        input, select, textarea {
+            background-color: var(--bg-secondary);
+            border-color: var(--border-color);
+            color: var(--text-primary);
+        }
+        
+        input:focus, select:focus, textarea:focus {
+            outline: none;
+            border-color: var(--accent-color);
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+        }
+        
+        .timer-urgent {
+            animation: pulse 1s ease-in-out infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        
+        .product-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        
+        .fade-in {
+            animation: fadeIn 0.3s ease-out;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: var(--text-secondary);
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body class="min-h-screen">
+    <div id="app">
+        <nav class="sticky top-0 z-50 card border-b border-custom px-4 py-3">
+            <div class="max-w-7xl mx-auto flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                    <svg class="w-8 h-8 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z"></path>
+                    </svg>
+                    <h1 class="text-xl font-bold">Office Pre-Order Hub</h1>
+                </div>
+                <div class="flex items-center gap-4">
+                    <button id="themeToggle" class="p-2 rounded-lg bg-secondary hover:bg-gray-200 dark:hover:bg-gray-700 transition">
+                        <svg id="sunIcon" class="w-5 h-5 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path>
+                        </svg>
+                        <svg id="moonIcon" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path>
+                        </svg>
+                    </button>
+                    <div id="navLinks" class="flex items-center gap-2"></div>
+                </div>
+            </div>
+        </nav>
+
+        <main id="mainContent" class="max-w-7xl mx-auto px-4 py-6"></main>
+    </div>
+
+    <div id="toast" class="fixed bottom-4 right-4 z-50 hidden">
+        <div class="bg-gray-800 text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-2">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+            </svg>
+            <span id="toastMessage"></span>
+        </div>
+    </div>
+
+    <div id="modal" class="fixed inset-0 z-50 hidden">
+        <div class="absolute inset-0 bg-black/50" id="modalOverlay" onclick="closeModal()"></div>
+        <div class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-full max-w-md card rounded-xl p-6">
+            <div id="modalContent"></div>
+        </div>
+    </div>
+
+    <script>
+        // Storage Keys
+        const KEYS = {
+            USERS: 'oph_users',
+            PRODUCTS: 'oph_products',
+            CAMPAIGNS: 'oph_campaigns',
+            ORDERS: 'oph_orders',
+            SESSION: 'oph_session',
+            THEME: 'oph_theme'
+        };
+
+        // State
+        let currentUser = null;
+
+        // Initialize
+        function init() {
+            initStorage();
+            initTheme();
+            restoreSession();
+            renderNavigation();
+            
+            const params = new URLSearchParams(window.location.search);
+            const campaignId = params.get('campaign');
+            
+            if (campaignId) {
+                renderBuyerView(campaignId);
+            } else if (currentUser) {
+                renderDashboard();
+            } else {
+                renderLanding();
+            }
+        }
+
+        // Storage Functions
+        function initStorage() {
+            if (!localStorage.getItem(KEYS.USERS)) localStorage.setItem(KEYS.USERS, '[]');
+            if (!localStorage.getItem(KEYS.PRODUCTS)) localStorage.setItem(KEYS.PRODUCTS, '[]');
+            if (!localStorage.getItem(KEYS.CAMPAIGNS)) localStorage.setItem(KEYS.CAMPAIGNS, '[]');
+            if (!localStorage.getItem(KEYS.ORDERS)) localStorage.setItem(KEYS.ORDERS, '[]');
+        }
+
+        function getData(key) {
+            try {
+                return JSON.parse(localStorage.getItem(key) || '[]');
+            } catch (e) {
+                return [];
+            }
+        }
+
+        function setData(key, data) {
+            localStorage.setItem(key, JSON.stringify(data));
+        }
+
+        // Auth Functions
+        function restoreSession() {
+            const session = localStorage.getItem(KEYS.SESSION);
+            if (session) {
+                try {
+                    const { username, password } = JSON.parse(session);
+                    const users = getData(KEYS.USERS);
+                    const user = users.find(u => u.username === username && u.password === password);
+                    if (user) currentUser = user;
+                } catch (e) {}
+            }
+        }
+
+        function login(username, password) {
+            const users = getData(KEYS.USERS);
+            const user = users.find(u => u.username === username && u.password === password);
+            if (user) {
+                currentUser = user;
+                localStorage.setItem(KEYS.SESSION, JSON.stringify({ username, password }));
+                return true;
+            }
+            return false;
+        }
+
+        function logout() {
+            currentUser = null;
+            localStorage.removeItem(KEYS.SESSION);
+            renderNavigation();
+            renderLanding();
+        }
+
+        // Users
+        function getUsers() { return getData(KEYS.USERS); }
+        function saveUser(user) {
+            const users = getUsers();
+            const idx = users.findIndex(u => u.username === user.username);
+            if (idx >= 0) users[idx] = user;
+            else users.push(user);
+            setData(KEYS.USERS, users);
+        }
+
+        // Products
+        function getProducts() { return getData(KEYS.PRODUCTS); }
+        function getUserProducts(username) { return getProducts().filter(p => p.username === username); }
+        function saveProduct(product) {
+            const products = getProducts();
+            if (product.id) {
+                const idx = products.findIndex(p => p.id === product.id);
+                if (idx >= 0) products[idx] = product;
+            } else {
+                product.id = Date.now().toString();
+                products.push(product);
+            }
+            setData(KEYS.PRODUCTS, products);
+        }
+        function deleteProduct(id, username) {
+            const products = getProducts().filter(p => !(p.id === id && p.username === username));
+            setData(KEYS.PRODUCTS, products);
+        }
+
+        // Campaigns
+        function getCampaigns() { return getData(KEYS.CAMPAIGNS); }
+        function getUserCampaigns(username) { return getCampaigns().filter(c => c.username === username); }
+        function saveCampaign(campaign) {
+            const campaigns = getCampaigns();
+            if (campaign.id) {
+                const idx = campaigns.findIndex(c => c.id === campaign.id);
+                if (idx >= 0) campaigns[idx] = campaign;
+            } else {
+                campaign.id = Date.now().toString();
+                campaign.createdAt = new Date().toISOString();
+                campaigns.push(campaign);
+            }
+            setData(KEYS.CAMPAIGNS, campaigns);
+        }
+        function deleteCampaign(id, username) {
+            const campaigns = getCampaigns().filter(c => !(c.id === id && c.username === username));
+            setData(KEYS.CAMPAIGNS, campaigns);
+        }
+
+        // Orders
+        function getOrders() { return getData(KEYS.ORDERS); }
+        function getCampaignOrders(campaignId) { return getOrders().filter(o => o.campaignId === campaignId); }
+        function getUserOrders(username) {
+            return getOrders().filter(o => {
+                const c = getCampaigns().find(c => c.id === o.campaignId);
+                return c && c.username === username;
+            });
+        }
+        function saveOrder(order) {
+            order.id = Date.now().toString();
+            order.createdAt = new Date().toISOString();
+            const orders = getOrders();
+            orders.push(order);
+            setData(KEYS.ORDERS, orders);
+        }
+        function updateOrderStatus(id, field, value) {
+            const orders = getOrders();
+            const idx = orders.findIndex(o => o.id === id);
+            if (idx >= 0) {
+                orders[idx][field] = value;
+                setData(KEYS.ORDERS, orders);
+            }
+        }
+
+        // UI Helpers
+        function showToast(msg) {
+            const toast = document.getElementById('toast');
+            document.getElementById('toastMessage').textContent = msg;
+            toast.classList.remove('hidden');
+            setTimeout(() => toast.classList.add('hidden'), 3000);
+        }
+
+        function showModal(html) {
+            document.getElementById('modalContent').innerHTML = html;
+            document.getElementById('modal').classList.remove('hidden');
+        }
+
+        function closeModal() {
+            document.getElementById('modal').classList.add('hidden');
+        }
+
+        function formatCurrency(n) {
+            return new Intl.NumberFormat('en-MY', { style: 'currency', currency: 'MYR' }).format(n);
+        }
+
+        function formatDate(d) {
+            return new Date(d).toLocaleString('en-MY', {
+                day: '2-digit', month: 'short', year: 'numeric',
+                hour: '2-digit', minute: '2-digit'
+            });
+        }
+
+        function getTimeLeft(end) {
+            const now = new Date().getTime();
+            const diff = new Date(end).getTime() - now;
+            if (diff <= 0) return { expired: true, d: 0, h: 0, m: 0, s: 0 };
+            return {
+                expired: false,
+                d: Math.floor(diff / 86400000),
+                h: Math.floor((diff % 86400000) / 3600000),
+                m: Math.floor((diff % 3600000) / 60000),
+                s: Math.floor((diff % 60000) / 1000)
+            };
+        }
+
+        function pad(n) { return String(n).padStart(2, '0'); }
+
+        // Theme
+        function initTheme() {
+            const isDark = localStorage.getItem(KEYS.THEME) === 'dark';
+            document.body.classList.toggle('dark', isDark);
+            document.getElementById('sunIcon').classList.toggle('hidden', !isDark);
+            document.getElementById('moonIcon').classList.toggle('hidden', isDark);
+        }
+
+        document.getElementById('themeToggle').addEventListener('click', () => {
+            const isDark = document.body.classList.toggle('dark');
+            localStorage.setItem(KEYS.THEME, isDark ? 'dark' : 'light');
+            document.getElementById('sunIcon').classList.toggle('hidden', !isDark);
+            document.getElementById('moonIcon').classList.toggle('hidden', isDark);
+        });
+
+        // Navigation
+        function renderNavigation() {
+            const nav = document.getElementById('navLinks');
+            if (currentUser) {
+                nav.innerHTML = `
+                    <span class="text-sm text-secondary">Hi, ${currentUser.name}</span>
+                    <button onclick="renderDashboard()" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 dark:hover:bg-gray-700 text-sm font-medium transition">Dashboard</button>
+                    <button onclick="renderCatalog()" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 dark:hover:bg-gray-700 text-sm font-medium transition">Products</button>
+                    <button onclick="renderCampaigns()" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 dark:hover:bg-gray-700 text-sm font-medium transition">Campaigns</button>
+                    <button onclick="logout()" class="px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-500 text-sm font-medium transition">Logout</button>
+                `;
+            } else {
+                nav.innerHTML = `
+                    <button onclick="renderLogin()" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 dark:hover:bg-gray-700 text-sm font-medium transition">Login</button>
+                    <button onclick="renderRegister()" class="px-3 py-1.5 rounded-lg btn-primary text-white text-sm font-medium transition">Register</button>
+                `;
+            }
+        }
+
+        // Pages
+        function renderLanding() {
+            document.getElementById('mainContent').innerHTML = `
+                <div class="text-center py-16 fade-in">
+                    <h2 class="text-4xl font-bold mb-4">Welcome to Office Pre-Order Hub</h2>
+                    <p class="text-xl text-secondary mb-8 max-w-2xl mx-auto">Streamline your office group buying with easy campaign creation, timer-based ordering, and Excel export.</p>
+                    
+                    <div class="flex flex-wrap justify-center gap-6 mb-12">
+                        <div class="card rounded-xl p-6 w-64">
+                            <div class="w-12 h-12 bg-blue-100 dark:bg-blue-900 rounded-lg flex items-center justify-center mx-auto mb-4">
+                                <svg class="w-6 h-6 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                </svg>
+                            </div>
+                            <h3 class="font-semibold mb-2">Timer-Based Campaigns</h3>
+                            <p class="text-sm text-secondary">Set countdown timers for limited-time offers</p>
+                        </div>
+                        <div class="card rounded-xl p-6 w-64">
+                            <div class="w-12 h-12 bg-green-100 dark:bg-green-900 rounded-lg flex items-center justify-center mx-auto mb-4">
+                                <svg class="w-6 h-6 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"></path>
+                                </svg>
+                            </div>
+                            <h3 class="font-semibold mb-2">No Login for Buyers</h3>
+                            <p class="text-sm text-secondary">Customers order instantly without registration</p>
+                        </div>
+                        <div class="card rounded-xl p-6 w-64">
+                            <div class="w-12 h-12 bg-purple-100 dark:bg-purple-900 rounded-lg flex items-center justify-center mx-auto mb-4">
+                                <svg class="w-6 h-6 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                                </svg>
+                            </div>
+                            <h3 class="font-semibold mb-2">Excel Export</h3>
+                            <p class="text-sm text-secondary">Download reports with one click</p>
+                        </div>
+                    </div>
+                    
+                    <div class="flex flex-wrap justify-center gap-4">
+                        <button onclick="renderRegister()" class="px-6 py-3 rounded-lg btn-primary text-white font-medium text-lg transition">Get Started</button>
+                        <button onclick="renderLogin()" class="px-6 py-3 rounded-lg bg-secondary hover:bg-gray-200 dark:hover:bg-gray-700 font-medium text-lg transition">I Have an Account</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderRegister() {
+            document.getElementById('mainContent').innerHTML = `
+                <div class="max-w-md mx-auto card rounded-xl p-8 fade-in">
+                    <h2 class="text-2xl font-bold mb-6 text-center">Salesperson Registration</h2>
+                    <form id="regForm" class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Your Name</label>
+                            <input type="text" name="name" required placeholder="John Doe" class="w-full px-4 py-2 rounded-lg border">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Username</label>
+                            <input type="text" name="username" required placeholder="johndoe" class="w-full px-4 py-2 rounded-lg border">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Password</label>
+                            <input type="password" name="password" required placeholder="••••••••" class="w-full px-4 py-2 rounded-lg border">
+                        </div>
+                        <hr class="border-custom my-4">
+                        <h3 class="font-semibold">Bank Transfer Details</h3>
+                        <p class="text-sm text-secondary mb-4">These will be shown to buyers on invoices</p>
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Bank Name</label>
+                            <input type="text" name="bankName" required placeholder="Maybank" class="w-full px-4 py-2 rounded-lg border">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Account Number</label>
+                            <input type="text" name="accountNumber" required placeholder="1234567890" class="w-full px-4 py-2 rounded-lg border">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Account Name</label>
+                            <input type="text" name="accountName" required placeholder="John Doe" class="w-full px-4 py-2 rounded-lg border">
+                        </div>
+                        <button type="submit" class="w-full py-3 rounded-lg btn-primary text-white font-medium transition">Create Account</button>
+                    </form>
+                    <p class="text-center mt-4 text-secondary">
+                        Already have an account? <button onclick="renderLogin()" class="text-blue-500 hover:underline">Login</button>
+                    </p>
+                </div>
+            `;
+            document.getElementById('regForm').addEventListener('submit', handleRegister);
+        }
+
+        function handleRegister(e) {
+            e.preventDefault();
+            const fd = new FormData(e.target);
+            const username = fd.get('username').trim();
+            
+            if (getUsers().find(u => u.username === username)) {
+                showToast('Username already exists');
+                return;
+            }
+            
+            const user = {
+                name: fd.get('name').trim(),
+                username: username,
+                password: fd.get('password'),
+                bankName: fd.get('bankName').trim(),
+                accountNumber: fd.get('accountNumber').trim(),
+                accountName: fd.get('accountName').trim()
+            };
+            
+            saveUser(user);
+            login(username, user.password);
+            showToast('Account created successfully!');
+            renderNavigation();
+            renderDashboard();
+        }
+
+        function renderLogin() {
+            document.getElementById('mainContent').innerHTML = `
+                <div class="max-w-md mx-auto card rounded-xl p-8 fade-in">
+                    <h2 class="text-2xl font-bold mb-6 text-center">Login</h2>
+                    <form id="loginForm" class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Username</label>
+                            <input type="text" name="username" required placeholder="Enter your username" class="w-full px-4 py-2 rounded-lg border">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Password</label>
+                            <input type="password" name="password" required placeholder="Enter your password" class="w-full px-4 py-2 rounded-lg border">
+                        </div>
+                        <button type="submit" class="w-full py-3 rounded-lg btn-primary text-white font-medium transition">Login</button>
+                    </form>
+                    <p class="text-center mt-4 text-secondary">
+                        Don't have an account? <button onclick="renderRegister()" class="text-blue-500 hover:underline">Register</button>
+                    </p>
+                </div>
+            `;
+            document.getElementById('loginForm').addEventListener('submit', handleLogin);
+        }
+
+        function handleLogin(e) {
+            e.preventDefault();
+            const fd = new FormData(e.target);
+            if (login(fd.get('username').trim(), fd.get('password'))) {
+                showToast('Login successful!');
+                renderNavigation();
+                renderDashboard();
+            } else {
+                showToast('Invalid username or password');
+            }
+        }
+
+        function renderDashboard() {
+            if (!currentUser) { renderLanding(); return; }
+            
+            const campaigns = getUserCampaigns(currentUser.username);
+            const orders = getUserOrders(currentUser.username);
+            const now = new Date().getTime();
+            const active = campaigns.filter(c => new Date(c.endTime).getTime() > now);
+            const total = orders.reduce((s, o) => s + (o.total || 0), 0);
+            
+            document.getElementById('mainContent').innerHTML = `
+                <div class="fade-in">
+                    <div class="flex items-center justify-between mb-6">
+                        <h2 class="text-2xl font-bold">Dashboard</h2>
+                        <button onclick="renderCampaignForm()" class="px-4 py-2 rounded-lg btn-primary text-white font-medium transition flex items-center gap-2">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                            New Campaign
+                        </button>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+                        <div class="card rounded-xl p-4">
+                            <p class="text-sm text-secondary">Active Campaigns</p>
+                            <p class="text-2xl font-bold">${active.length}</p>
+                        </div>
+                        <div class="card rounded-xl p-4">
+                            <p class="text-sm text-secondary">Total Orders</p>
+                            <p class="text-2xl font-bold">${orders.length}</p>
+                        </div>
+                        <div class="card rounded-xl p-4">
+                            <p class="text-sm text-secondary">Total Revenue</p>
+                            <p class="text-2xl font-bold">${formatCurrency(total)}</p>
+                        </div>
+                        <div class="card rounded-xl p-4">
+                            <p class="text-sm text-secondary">Paid / Delivered</p>
+                            <p class="text-2xl font-bold">${orders.filter(o => o.paid).length} / ${orders.filter(o => o.delivered).length}</p>
+                        </div>
+                    </div>
+                    
+                    <div class="card rounded-xl overflow-hidden">
+                        <div class="px-6 py-4 border-b border-custom flex items-center justify-between">
+                            <h3 class="font-semibold">Recent Orders</h3>
+                            <button onclick="renderMasterTracker()" class="text-sm text-blue-500 hover:underline">View All Orders →</button>
+                        </div>
+                        ${orders.length === 0 ? `
+                            <div class="p-8 text-center text-secondary">
+                                <p>No orders yet</p>
+                                <p class="text-sm mt-1">Create a campaign to start receiving orders</p>
+                            </div>
+                        ` : `
+                            <div class="overflow-x-auto">
+                                <table class="w-full text-sm">
+                                    <thead class="bg-secondary">
+                                        <tr>
+                                            <th class="px-6 py-3 text-left">Campaign</th>
+                                            <th class="px-6 py-3 text-left">Buyer</th>
+                                            <th class="px-6 py-3 text-left">Items</th>
+                                            <th class="px-6 py-3 text-left">Total</th>
+                                            <th class="px-6 py-3 text-left">Paid</th>
+                                            <th class="px-6 py-3 text-left">Delivered</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
+                                        ${orders.slice(0, 10).map(o => {
+                                            const c = campaigns.find(c => c.id === o.campaignId);
+                                            return `
+                                                <tr class="hover:bg-secondary/50">
+                                                    <td class="px-6 py-4">${c ? c.name : 'Unknown'}</td>
+                                                    <td class="px-6 py-4">${o.buyerName}</td>
+                                                    <td class="px-6 py-4">${o.items.length} items</td>
+                                                    <td class="px-6 py-4 font-medium">${formatCurrency(o.total)}</td>
+                                                    <td class="px-6 py-4">
+                                                        <button onclick="toggleStatus('${o.id}', 'paid', ${!o.paid})" 
+                                                            class="px-2 py-1 rounded text-xs ${o.paid ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-600'}">
+                                                            ${o.paid ? 'Paid' : 'Unpaid'}
+                                                        </button>
+                                                    </td>
+                                                    <td class="px-6 py-4">
+                                                        <button onclick="toggleStatus('${o.id}', 'delivered', ${!o.delivered})" 
+                                                            class="px-2 py-1 rounded text-xs ${o.delivered ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-600'}">
+                                                            ${o.delivered ? 'Delivered' : 'Pending'}
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            `;
+                                        }).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        `}
+                    </div>
+                </div>
+            `;
+        }
+
+        function toggleStatus(orderId, field, value) {
+            updateOrderStatus(orderId, field, value);
+            renderDashboard();
+        }
+
+        function renderCatalog() {
+            if (!currentUser) { renderLanding(); return; }
+            const products = getUserProducts(currentUser.username);
+            
+            document.getElementById('mainContent').innerHTML = `
+                <div class="fade-in">
+                    <div class="flex items-center justify-between mb-6">
+                        <h2 class="text-2xl font-bold">Product Catalog</h2>
+                        <button onclick="showProductForm()" class="px-4 py-2 rounded-lg btn-primary text-white font-medium transition flex items-center gap-2">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                            Add Product
+                        </button>
+                    </div>
+                    
+                    ${products.length === 0 ? `
+                        <div class="card rounded-xl p-12 text-center">
+                            <svg class="w-16 h-16 mx-auto text-gray-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"></path>
+                            </svg>
+                            <p class="text-lg text-secondary">No products yet</p>
+                            <p class="text-sm text-secondary mt-1">Add products to your catalog to use in campaigns</p>
+                        </div>
+                    ` : `
+                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                            ${products.map(p => `
+                                <div class="card rounded-xl p-4 product-card transition">
+                                    <div class="flex justify-between items-start mb-3">
+                                        <h3 class="font-semibold">${p.name}</h3>
+                                        <button onclick="confirmDeleteProduct('${p.id}')" class="text-red-500 hover:text-red-700 p-1">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                                            </svg>
+                                        </button>
+                                    </div>
+                                    <div class="space-y-2 text-sm">
+                                        <div class="flex justify-between">
+                                            <span class="text-secondary">Unit Size:</span>
+                                            <span class="font-medium">${p.unit}</span>
+                                        </div>
+                                        <div class="flex justify-between">
+                                            <span class="text-secondary">Default Price:</span>
+                                            <span class="font-medium text-green-600">${formatCurrency(p.price)}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    `}
+                </div>
+            `;
+        }
+
+        function showProductForm(product = null) {
+            const isEdit = !!product;
+            showModal(`
+                <h3 class="text-lg font-semibold mb-4">${isEdit ? 'Edit Product' : 'Add New Product'}</h3>
+                <form id="productForm" class="space-y-4">
+                    <input type="hidden" name="id" value="${product?.id || ''}">
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Product Name</label>
+                        <input type="text" name="name" required value="${product?.name || ''}" placeholder="e.g., Premium Durian" class="w-full px-4 py-2 rounded-lg border">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Unit / Package Size</label>
+                        <input type="text" name="unit" required value="${product?.unit || ''}" placeholder="e.g., 1kg, 500g, Pack of 10" class="w-full px-4 py-2 rounded-lg border">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Default Price (MYR)</label>
+                        <input type="number" name="price" required step="0.01" min="0" value="${product?.price || ''}" class="w-full px-4 py-2 rounded-lg border">
+                    </div>
+                    <div class="flex gap-2 pt-4">
+                        <button type="button" onclick="closeModal()" class="flex-1 py-2 rounded-lg bg-secondary hover:bg-gray-200 transition">Cancel</button>
+                        <button type="submit" class="flex-1 py-2 rounded-lg btn-primary text-white font-medium transition">${isEdit ? 'Update' : 'Add'} Product</button>
+                    </div>
+                </form>
+            `);
+            document.getElementById('productForm').addEventListener('submit', handleProductSubmit);
+        }
+
+        function handleProductSubmit(e) {
+            e.preventDefault();
+            const fd = new FormData(e.target);
+            saveProduct({
+                id: fd.get('id') || null,
+                username: currentUser.username,
+                name: fd.get('name').trim(),
+                unit: fd.get('unit').trim(),
+                price: parseFloat(fd.get('price'))
+            });
+            closeModal();
+            showToast(fd.get('id') ? 'Product updated' : 'Product added');
+            renderCatalog();
+        }
+
+        function confirmDeleteProduct(id) {
+            showModal(`
+                <h3 class="text-lg font-semibold mb-4">Delete Product?</h3>
+                <p class="text-secondary mb-6">This action cannot be undone.</p>
+                <div class="flex gap-2">
+                    <button onclick="closeModal()" class="flex-1 py-2 rounded-lg bg-secondary hover:bg-gray-200 transition">Cancel</button>
+                    <button onclick="doDeleteProduct('${id}')" class="flex-1 py-2 rounded-lg bg-red-500 text-white font-medium hover:bg-red-600 transition">Delete</button>
+                </div>
+            `);
+        }
+
+        function doDeleteProduct(id) {
+            deleteProduct(id, currentUser.username);
+            closeModal();
+            showToast('Product deleted');
+            renderCatalog();
+        }
+
+        function renderCampaigns() {
+            if (!currentUser) { renderLanding(); return; }
+            const campaigns = getUserCampaigns(currentUser.username);
+            
+            document.getElementById('mainContent').innerHTML = `
+                <div class="fade-in">
+                    <div class="flex items-center justify-between mb-6">
+                        <h2 class="text-2xl font-bold">Campaigns</h2>
+                        <button onclick="renderCampaignForm()" class="px-4 py-2 rounded-lg btn-primary text-white font-medium transition flex items-center gap-2">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                            New Campaign
+                        </button>
+                    </div>
+                    
+                    ${campaigns.length === 0 ? `
+                        <div class="card rounded-xl p-12 text-center">
+                            <svg class="w-16 h-16 mx-auto text-gray-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path>
+                            </svg>
+                            <p class="text-lg text-secondary">No campaigns yet</p>
+                            <p class="text-sm text-secondary mt-1">Create your first campaign to start collecting orders</p>
+                        </div>
+                    ` : `
+                        <div class="grid gap-4">
+                            ${campaigns.map(c => {
+                                const orders = getCampaignOrders(c.id);
+                                const tl = getTimeLeft(c.endTime);
+                                const isActive = !tl.expired;
+                                return `
+                                    <div class="card rounded-xl p-6 ${isActive ? 'border-l-4 border-l-green-500' : 'border-l-4 border-l-gray-400 opacity-75'}">
+                                        <div class="flex flex-wrap items-start justify-between gap-4">
+                                            <div class="flex-1 min-w-0">
+                                                <div class="flex items-center gap-2 mb-2">
+                                                    <h3 class="font-semibold text-lg">${c.name}</h3>
+                                                    <span class="px-2 py-0.5 rounded text-xs font-medium ${isActive ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-600'}">
+                                                        ${isActive ? 'Active' : 'Closed'}
+                                                    </span>
+                                                </div>
+                                                <div class="flex flex-wrap gap-4 text-sm text-secondary">
+                                                    <span>📦 ${c.items.length} products</span>
+                                                    <span>🛒 ${orders.length} orders</span>
+                                                    <span>💰 ${formatCurrency(orders.reduce((s, o) => s + (o.total || 0), 0))}</span>
+                                                </div>
+                                                <div class="mt-3 text-sm">
+                                                    ${isActive ? `
+                                                        <div class="flex items-center gap-2 ${tl.d === 0 && tl.h < 1 ? 'timer-urgent text-red-500' : ''}">
+                                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                                                            <span class="font-mono">${tl.d > 0 ? tl.d + 'd ' : ''}${pad(tl.h)}:${pad(tl.m)}:${pad(tl.s)}</span>
+                                                        </div>
+                                                    ` : `<span class="text-red-500">Closed on ${formatDate(c.endTime)}</span>`}
+                                                </div>
+                                            </div>
+                                            <div class="flex flex-wrap gap-2">
+                                                <button onclick="copyLink('${c.id}')" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 text-sm font-medium transition flex items-center gap-1">
+                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                                                    Copy Link
+                                                </button>
+                                                <button onclick="exportExcel('${c.id}')" class="px-3 py-1.5 rounded-lg bg-green-500/10 hover:bg-green-500/20 text-green-600 text-sm font-medium transition flex items-center gap-1">
+                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                                                    Export
+                                                </button>
+                                                <button onclick="confirmDeleteCampaign('${c.id}')" class="px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-500 text-sm font-medium transition">Delete</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    `}
+                </div>
+            `;
+        }
+
+        function copyLink(id) {
+            const url = `${location.origin}${location.pathname}?campaign=${id}`;
+            navigator.clipboard.writeText(url).then(() => showToast('Link copied!'));
+        }
+
+        function confirmDeleteCampaign(id) {
+            showModal(`
+                <h3 class="text-lg font-semibold mb-4">Delete Campaign?</h3>
+                <p class="text-secondary mb-6">All associated orders will also be deleted.</p>
+                <div class="flex gap-2">
+                    <button onclick="closeModal()" class="flex-1 py-2 rounded-lg bg-secondary hover:bg-gray-200 transition">Cancel</button>
+                    <button onclick="doDeleteCampaign('${id}')" class="flex-1 py-2 rounded-lg bg-red-500 text-white font-medium hover:bg-red-600 transition">Delete</button>
+                </div>
+            `);
+        }
+
+        function doDeleteCampaign(id) {
+            deleteCampaign(id, currentUser.username);
+            closeModal();
+            showToast('Campaign deleted');
+            renderCampaigns();
+        }
+
+        function renderCampaignForm() {
+            if (!currentUser) { renderLanding(); return; }
+            const products = getUserProducts(currentUser.username);
+            
+            if (products.length === 0) {
+                showToast('Please add products to your catalog first');
+                renderCatalog();
+                return;
+            }
+            
+            const tomorrow = new Date();
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            
+            document.getElementById('mainContent').innerHTML = `
+                <div class="fade-in max-w-2xl mx-auto">
+                    <button onclick="renderCampaigns()" class="flex items-center gap-1 text-secondary hover:text-primary mb-4">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+                        Back to Campaigns
+                    </button>
+                    
+                    <div class="card rounded-xl p-6">
+                        <h2 class="text-2xl font-bold mb-6">Create New Campaign</h2>
+                        <form id="campaignForm" class="space-y-6">
+                            <div>
+                                <label class="block text-sm font-medium mb-1">Campaign Name</label>
+                                <input type="text" name="name" required placeholder="e.g., CNY Durian Pre-Order" class="w-full px-4 py-2 rounded-lg border">
+                            </div>
+                            
+                            <div>
+                                <label class="block text-sm font-medium mb-2">Duration</label>
+                                <div class="flex flex-wrap gap-2 mb-3">
+                                    <button type="button" onclick="setDuration(0.5)" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 text-sm font-medium transition">30 min</button>
+                                    <button type="button" onclick="setDuration(1)" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 text-sm font-medium transition">1 hour</button>
+                                    <button type="button" onclick="setDuration(2)" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 text-sm font-medium transition">2 hours</button>
+                                    <button type="button" onclick="setDuration(24)" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 text-sm font-medium transition">1 day</button>
+                                </div>
+                                <div class="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label class="block text-sm text-secondary mb-1">Date</label>
+                                        <input type="date" name="date" required value="${tomorrow.toISOString().split('T')[0]}" class="w-full px-4 py-2 rounded-lg border" id="endDate">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm text-secondary mb-1">Time</label>
+                                        <input type="time" name="time" required value="23:59" class="w-full px-4 py-2 rounded-lg border" id="endTime">
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div>
+                                <label class="block text-sm font-medium mb-3">Select Products</label>
+                                <div class="space-y-3 max-h-80 overflow-y-auto pr-2">
+                                    ${products.map(p => `
+                                        <div class="card rounded-lg p-4 flex items-center gap-4 product-item" data-id="${p.id}">
+                                            <input type="checkbox" name="products" value="${p.id}" class="w-5 h-5 rounded" onchange="toggleProductItem(this)">
+                                            <div class="flex-1 min-w-0">
+                                                <p class="font-medium">${p.name}</p>
+                                                <p class="text-sm text-secondary">${p.unit}</p>
+                                            </div>
+                                            <div class="w-32">
+                                                <input type="number" name="price_${p.id}" step="0.01" min="0" value="${p.price}" placeholder="Price" class="w-full px-3 py-1.5 rounded border text-sm text-right">
+                                            </div>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            </div>
+                            
+                            <div class="flex gap-3 pt-4">
+                                <button type="button" onclick="renderCampaigns()" class="flex-1 py-3 rounded-lg bg-secondary hover:bg-gray-200 font-medium transition">Cancel</button>
+                                <button type="submit" class="flex-1 py-3 rounded-lg btn-primary text-white font-medium transition">Create Campaign</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+            document.getElementById('campaignForm').addEventListener('submit', handleCampaignSubmit);
+        }
+
+        function setDuration(hours) {
+            const end = new Date();
+            end.setHours(end.getHours() + hours);
+            document.getElementById('endDate').value = end.toISOString().split('T')[0];
+            document.getElementById('endTime').value = end.toTimeString().slice(0, 5);
+        }
+
+        function toggleProductItem(cb) {
+            cb.closest('.product-item').classList.toggle('ring-2', cb.checked);
+            cb.closest('.product-item').classList.toggle('ring-blue-500', cb.checked);
+        }
+
+        function handleCampaignSubmit(e) {
+            e.preventDefault();
+            const fd = new FormData(e.target);
+            const selected = fd.getAll('products');
+            
+            if (selected.length === 0) {
+                showToast('Please select at least one product');
+                return;
+            }
+            
+            const products = getProducts();
+            const items = selected.map(id => {
+                const p = products.find(p => p.id === id);
+                return {
+                    productId: id,
+                    name: p.name,
+                    unit: p.unit,
+                    price: parseFloat(fd.get(`price_${id}`))
+                };
+            });
+            
+            const endTime = new Date(`${fd.get('date')}T${fd.get('time')}`).toISOString();
+            
+            saveCampaign({
+                username: currentUser.username,
+                name: fd.get('name').trim(),
+                endTime,
+                items
+            });
+            
+            showToast('Campaign created!');
+            renderCampaigns();
+        }
+
+        function renderBuyerView(campaignId) {
+            // Hide salesperson navigation for buyer view
+            document.getElementById('navLinks').innerHTML = `
+                <a href="${location.pathname}" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 dark:hover:bg-gray-700 text-sm font-medium transition">← Back to Home</a>
+            `;
+            
+            const campaigns = getCampaigns();
+            const campaign = campaigns.find(c => c.id === campaignId);
+            
+            if (!campaign) {
+                document.getElementById('mainContent').innerHTML = `
+                    <div class="text-center py-16">
+                        <h2 class="text-2xl font-bold mb-4">Campaign Not Found</h2>
+                        <p class="text-secondary">This campaign may have been deleted or the link is invalid.</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            const tl = getTimeLeft(campaign.endTime);
+            const isExpired = tl.expired;
+            const seller = getUsers().find(u => u.username === campaign.username);
+            
+            document.getElementById('mainContent').innerHTML = `
+                <div class="fade-in max-w-2xl mx-auto">
+                    ${isExpired ? `
+                        <div class="bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-xl p-6 mb-6 text-center">
+                            <h2 class="text-2xl font-bold text-red-600 mb-2">🔒 Campaign Closed</h2>
+                            <p class="text-secondary">This campaign has ended. Orders are no longer accepted.</p>
+                        </div>
+                    ` : `
+                        <div class="card rounded-xl p-6 mb-6 text-center ${tl.d === 0 && tl.h < 1 ? 'border-2 border-red-400 timer-urgent' : ''}">
+                            <p class="text-sm text-secondary mb-2">Time Remaining</p>
+                            <div class="text-4xl font-mono font-bold" id="timerDisplay">
+                                ${tl.d > 0 ? `<span class="text-2xl">${tl.d}d</span> ` : ''}${pad(tl.h)}:${pad(tl.m)}:${pad(tl.s)}
+                            </div>
+                        </div>
+                    `}
+                    
+                    <div class="card rounded-xl p-6 mb-6">
+                        <h2 class="text-2xl font-bold mb-1">${campaign.name}</h2>
+                        <p class="text-secondary text-sm">Organized by ${seller?.name || 'Unknown'}</p>
+                    </div>
+                    
+                    <form id="buyerForm" class="space-y-4">
+                        <input type="hidden" name="campaignId" value="${campaignId}">
+                        
+                        <div class="card rounded-xl p-6">
+                            <label class="block text-sm font-medium mb-2">Your Name</label>
+                            <input type="text" name="buyerName" required ${isExpired ? 'disabled' : ''} placeholder="Enter your name" class="w-full px-4 py-2 rounded-lg border">
+                        </div>
+                        
+                        <div class="card rounded-xl overflow-hidden">
+                            <div class="px-6 py-4 border-b border-custom">
+                                <h3 class="font-semibold">Select Items</h3>
+                            </div>
+                            <div class="divide-y divide-gray-200 dark:divide-gray-700">
+                                ${campaign.items.map((item, idx) => `
+                                    <div class="p-4 flex items-center gap-4">
+                                        <div class="flex-1">
+                                            <p class="font-medium">${item.name}</p>
+                                            <p class="text-sm text-secondary">${item.unit} - ${formatCurrency(item.price)}</p>
+                                        </div>
+                                        <div class="flex items-center gap-2">
+                                            <button type="button" onclick="adjustQty(${idx}, -1)" ${isExpired ? 'disabled' : ''} class="w-8 h-8 rounded-full bg-secondary hover:bg-gray-300 flex items-center justify-center font-bold">−</button>
+                                            <input type="number" name="qty_${idx}" value="0" min="0" ${isExpired ? 'disabled' : ''} class="w-16 text-center px-2 py-1 rounded border" onchange="this.value = Math.max(0, parseInt(this.value) || 0)">
+                                            <button type="button" onclick="adjustQty(${idx}, 1)" ${isExpired ? 'disabled' : ''} class="w-8 h-8 rounded-full bg-secondary hover:bg-gray-300 flex items-center justify-center font-bold">+</button>
+                                            <input type="hidden" name="item_${idx}" value='${JSON.stringify(item).replace(/'/g, "&#39;")}'>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                        
+                        <button type="submit" ${isExpired ? 'disabled' : ''} class="w-full py-4 rounded-xl btn-primary text-white font-semibold text-lg transition ${isExpired ? 'opacity-50 cursor-not-allowed' : ''}">
+                            ${isExpired ? 'Campaign Closed' : 'Submit Order'}
+                        </button>
+                    </form>
+                </div>
+            `;
+            
+            document.getElementById('buyerForm').addEventListener('submit', handleBuyerSubmit);
+            
+            if (!isExpired) {
+                startBuyerTimer(campaignId);
+            }
+        }
+
+        function adjustQty(idx, delta) {
+            const input = document.querySelector(`input[name="qty_${idx}"]`);
+            input.value = Math.max(0, parseInt(input.value || 0) + delta);
+        }
+
+        function handleBuyerSubmit(e) {
+            e.preventDefault();
+            const fd = new FormData(e.target);
+            const campaignId = fd.get('campaignId');
+            const buyerName = fd.get('buyerName').trim();
+            
+            const items = [];
+            for (const [key, val] of fd.entries()) {
+                if (key.startsWith('qty_')) {
+                    const idx = key.split('_')[1];
+                    const qty = parseInt(val);
+                    if (qty > 0) {
+                        const item = JSON.parse(fd.get(`item_${idx}`));
+                        items.push({ ...item, quantity: qty, subtotal: qty * item.price });
+                    }
+                }
+            }
+            
+            if (items.length === 0) {
+                showToast('Please select at least one item');
+                return;
+            }
+            
+            const total = items.reduce((s, i) => s + i.subtotal, 0);
+            const campaigns = getCampaigns();
+            const campaign = campaigns.find(c => c.id === campaignId);
+            const seller = getUsers().find(u => u.username === campaign.username);
+            
+            saveOrder({ campaignId, buyerName, items, total, paid: false, delivered: false });
+            showOrderConfirmation({ buyerName, items, total }, seller, campaign);
+        }
+
+        function startBuyerTimer(campaignId) {
+            const interval = setInterval(() => {
+                const campaigns = getCampaigns();
+                const campaign = campaigns.find(c => c.id === campaignId);
+                
+                if (!campaign) { clearInterval(interval); return; }
+                
+                const tl = getTimeLeft(campaign.endTime);
+                
+                if (tl.expired) {
+                    clearInterval(interval);
+                    showToast('Campaign has ended!');
+                    renderBuyerView(campaignId);
+                    return;
+                }
+                
+                const display = document.getElementById('timerDisplay');
+                if (display) {
+                    display.innerHTML = `${tl.d > 0 ? `<span class="text-2xl">${tl.d}d</span> ` : ''}${pad(tl.h)}:${pad(tl.m)}:${pad(tl.s)}`;
+                    if (tl.d === 0 && tl.h < 1) display.classList.add('timer-urgent', 'text-red-500');
+                }
+            }, 1000);
+        }
+
+        function showOrderConfirmation(order, seller, campaign) {
+            document.getElementById('mainContent').innerHTML = `
+                <div class="fade-in max-w-xl mx-auto">
+                    <div class="card rounded-xl overflow-hidden">
+                        <div class="bg-green-500 text-white px-6 py-4">
+                            <div class="flex items-center gap-2">
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                                <h2 class="text-xl font-bold">Order Confirmed!</h2>
+                            </div>
+                        </div>
+                        
+                        <div class="p-6 space-y-6">
+                            <div class="text-center">
+                                <p class="text-secondary text-sm">Digital Invoice for</p>
+                                <p class="text-2xl font-bold">${order.buyerName}</p>
+                                <p class="text-secondary text-sm mt-1">${campaign.name}</p>
+                            </div>
+                            
+                            <div class="border-t border-b border-gray-200 dark:border-gray-700 py-4">
+                                <table class="w-full text-sm">
+                                    <thead>
+                                        <tr class="text-left text-secondary">
+                                            <th class="pb-2">Item</th>
+                                            <th class="pb-2 text-center">Qty</th>
+                                            <th class="pb-2 text-right">Price</th>
+                                            <th class="pb-2 text-right">Subtotal</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${order.items.map(item => `
+                                            <tr>
+                                                <td class="py-1">${item.name}</td>
+                                                <td class="py-1 text-center">${item.quantity}</td>
+                                                <td class="py-1 text-right">${formatCurrency(item.price)}</td>
+                                                <td class="py-1 text-right">${formatCurrency(item.subtotal)}</td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                            
+                            <div class="flex justify-between items-center text-xl font-bold">
+                                <span>Total</span>
+                                <span class="text-green-600">${formatCurrency(order.total)}</span>
+                            </div>
+                            
+                            <div class="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-4">
+                                <h4 class="font-semibold mb-2">Payment Details</h4>
+                                <div class="space-y-1 text-sm">
+                                    <p><span class="text-secondary">Bank:</span> ${seller?.bankName || 'N/A'}</p>
+                                    <p><span class="text-secondary">Account:</span> ${seller?.accountNumber || 'N/A'}</p>
+                                    <p><span class="text-secondary">Name:</span> ${seller?.accountName || 'N/A'}</p>
+                                </div>
+                            </div>
+                            
+                            <button onclick="shareWhatsApp('${order.buyerName}', '${campaign.name}', ${order.total}, '${seller?.bankName || ''}', '${seller?.accountNumber || ''}')" class="w-full py-3 rounded-lg bg-green-500 hover:bg-green-600 text-white font-medium transition flex items-center justify-center gap-2">
+                                <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+                                Share to WhatsApp
+                            </button>
+                            
+                            <button onclick="window.print()" class="w-full py-3 rounded-lg bg-secondary hover:bg-gray-200 font-medium transition">Print / Save as PDF</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function shareWhatsApp(name, campaign, total, bank, account) {
+            const msg = `Hi! I've placed an order for ${campaign}.\n\nName: ${name}\nTotal: RM${total.toFixed(2)}\n\nPlease find my payment details:\nBank: ${bank}\nAccount: ${account}\n\nI will transfer the payment shortly. Thank you!`;
+            window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
+        }
+
+        function renderMasterTracker() {
+            if (!currentUser) { renderLanding(); return; }
+            const campaigns = getUserCampaigns(currentUser.username);
+            const orders = getUserOrders(currentUser.username);
+            
+            document.getElementById('mainContent').innerHTML = `
+                <div class="fade-in">
+                    <div class="flex items-center justify-between mb-6">
+                        <h2 class="text-2xl font-bold">Master Order Tracker</h2>
+                        <button onclick="exportAllExcel()" class="px-4 py-2 rounded-lg bg-green-500 text-white font-medium transition flex items-center gap-2">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                            Export All to Excel
+                        </button>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <select id="campaignFilter" onchange="filterOrders()" class="px-4 py-2 rounded-lg border">
+                            <option value="">All Campaigns</option>
+                            ${campaigns.map(c => `<option value="${c.id}">${c.name}</option>`).join('')}
+                        </select>
+                    </div>
+                    
+                    <div class="card rounded-xl overflow-hidden">
+                        ${orders.length === 0 ? `
+                            <div class="p-8 text-center text-secondary">
+                                <p>No orders yet</p>
+                            </div>
+                        ` : `
+                            <div class="overflow-x-auto">
+                                <table class="w-full text-sm">
+                                    <thead class="bg-secondary">
+                                        <tr>
+                                            <th class="px-4 py-3 text-left">Campaign</th>
+                                            <th class="px-4 py-3 text-left">Buyer</th>
+                                            <th class="px-4 py-3 text-left">Items</th>
+                                            <th class="px-4 py-3 text-left">Total</th>
+                                            <th class="px-4 py-3 text-left">Paid</th>
+                                            <th class="px-4 py-3 text-left">Delivered</th>
+                                            <th class="px-4 py-3 text-left">Date</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="ordersTableBody" class="divide-y divide-gray-200 dark:divide-gray-700">
+                                        ${renderOrdersRows(orders, campaigns)}
+                                    </tbody>
+                                </table>
+                            </div>
+                        `}
+                    </div>
+                    
+                    <div class="mt-6 grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <div class="card rounded-xl p-4 text-center">
+                            <p class="text-sm text-secondary">Total Orders</p>
+                            <p class="text-2xl font-bold">${orders.length}</p>
+                        </div>
+                        <div class="card rounded-xl p-4 text-center">
+                            <p class="text-sm text-secondary">Total Revenue</p>
+                            <p class="text-2xl font-bold">${formatCurrency(orders.reduce((s, o) => s + o.total, 0))}</p>
+                        </div>
+                        <div class="card rounded-xl p-4 text-center">
+                            <p class="text-sm text-secondary">Paid</p>
+                            <p class="text-2xl font-bold text-green-600">${orders.filter(o => o.paid).length}</p>
+                        </div>
+                        <div class="card rounded-xl p-4 text-center">
+                            <p class="text-sm text-secondary">Pending</p>
+                            <p class="text-2xl font-bold text-yellow-600">${orders.filter(o => !o.paid).length}</p>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderOrdersRows(orders, campaigns) {
+            return orders.map(o => {
+                const c = campaigns.find(c => c.id === o.campaignId);
+                return `
+                    <tr class="hover:bg-secondary/50">
+                        <td class="px-4 py-3">${c ? c.name : 'Unknown'}</td>
+                        <td class="px-4 py-3 font-medium">${o.buyerName}</td>
+                        <td class="px-4 py-3">
+                            <button onclick="toggleDetails(this)" class="text-blue-500 hover:underline text-sm">${o.items.length} items (view)</button>
+                            <div class="hidden mt-2 p-3 bg-secondary rounded text-sm">
+                                ${o.items.map(i => `<div class="flex justify-between"><span>${i.name} x${i.quantity}</span><span>${formatCurrency(i.subtotal)}</span></div>`).join('')}
+                            </div>
+                        </td>
+                        <td class="px-4 py-3 font-medium">${formatCurrency(o.total)}</td>
+                        <td class="px-4 py-3">
+                            <button onclick="toggleStatus('${o.id}', 'paid', ${!o.paid})" class="px-3 py-1 rounded text-sm font-medium ${o.paid ? 'bg-green-100 text-green-700 dark:bg-green-900/30' : 'bg-gray-200 text-gray-600'}">
+                                ${o.paid ? '✓ Paid' : 'Unpaid'}
+                            </button>
+                        </td>
+                        <td class="px-4 py-3">
+                            <button onclick="toggleStatus('${o.id}', 'delivered', ${!o.delivered})" class="px-3 py-1 rounded text-sm font-medium ${o.delivered ? 'bg-green-100 text-green-700 dark:bg-green-900/30' : 'bg-gray-200 text-gray-600'}">
+                                ${o.delivered ? '✓ Delivered' : 'Pending'}
+                            </button>
+                        </td>
+                        <td class="px-4 py-3 text-sm text-secondary">${formatDate(o.createdAt)}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function toggleDetails(btn) {
+            btn.nextElementSibling.classList.toggle('hidden');
+        }
+
+        function filterOrders() {
+            const campaignId = document.getElementById('campaignFilter').value;
+            const campaigns = getUserCampaigns(currentUser.username);
+            const orders = campaignId ? getUserOrders(currentUser.username).filter(o => o.campaignId === campaignId) : getUserOrders(currentUser.username);
+            document.getElementById('ordersTableBody').innerHTML = renderOrdersRows(orders, campaigns);
+        }
+
+        function exportExcel(campaignId) {
+            const campaigns = getCampaigns();
+            const campaign = campaigns.find(c => c.id === campaignId);
+            const orders = getCampaignOrders(campaignId);
+            
+            if (orders.length === 0) { showToast('No orders to export'); return; }
+            
+            const data = [
+                ['Campaign:', campaign.name],
+                ['End Date:', formatDate(campaign.endTime)],
+                ['', ''],
+                ['Order Report'],
+                ['Buyer Name', 'Items', 'Total (MYR)', 'Paid', 'Delivered', 'Date'],
+                ...orders.map(o => [
+                    o.buyerName,
+                    o.items.map(i => `${i.name} x${i.quantity}`).join(', '),
+                    o.total,
+                    o.paid ? 'Yes' : 'No',
+                    o.delivered ? 'Yes' : 'No',
+                    formatDate(o.createdAt)
+                ]),
+                ['', '', '', '', '', ''],
+                ['Total', '', orders.reduce((s, o) => s + o.total, 0), '', '', '']
+            ];
+            
+            const wb = XLSX.utils.book_new();
+            const ws = XLSX.utils.aoa_to_sheet(data);
+            ws['!cols'] = [{ wch: 20 }, { wch: 40 }, { wch: 15 }, { wch: 8 }, { wch: 10 }, { wch: 20 }];
+            XLSX.utils.book_append_sheet(wb, ws, 'Orders');
+            XLSX.writeFile(wb, `${campaign.name.replace(/[^a-z0-9]/gi, '_')}_orders.xlsx`);
+            showToast('Excel exported!');
+        }
+
+        function exportAllExcel() {
+            const orders = getUserOrders(currentUser.username);
+            const campaigns = getUserCampaigns(currentUser.username);
+            
+            if (orders.length === 0) { showToast('No orders to export'); return; }
+            
+            const data = [
+                ['Master Order Report'],
+                ['Generated:', formatDate(new Date().toISOString())],
+                ['', ''],
+                ['Campaign', 'Buyer Name', 'Items', 'Total (MYR)', 'Paid', 'Delivered', 'Date'],
+                ...orders.map(o => {
+                    const c = campaigns.find(c => c.id === o.campaignId);
+                    return [
+                        c ? c.name : 'Unknown',
+                        o.buyerName,
+                        o.items.map(i => `${i.name} x${i.quantity}`).join(', '),
+                        o.total,
+                        o.paid ? 'Yes' : 'No',
+                        o.delivered ? 'Yes' : 'No',
+                        formatDate(o.createdAt)
+                    ];
+                }),
+                ['', '', '', '', '', '', ''],
+                ['Total', '', '', orders.reduce((s, o) => s + o.total, 0), '', '', '']
+            ];
+            
+            const wb = XLSX.utils.book_new();
+            const ws = XLSX.utils.aoa_to_sheet(data);
+            ws['!cols'] = [{ wch: 25 }, { wch: 20 }, { wch: 40 }, { wch: 15 }, { wch: 8 }, { wch: 10 }, { wch: 20 }];
+            XLSX.utils.book_append_sheet(wb, ws, 'All Orders');
+            XLSX.writeFile(wb, 'master_orders.xlsx');
+            showToast('Excel exported!');
+        }
+
+        // Initialize
+        init();
+    </script>
+</body>
+</html>
