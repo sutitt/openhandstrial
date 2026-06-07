@@ -338,8 +338,17 @@
                 return c && c.username === username;
             });
         }
+        function generateOrderId() {
+            const d = new Date();
+            const ymd = String(d.getFullYear()).slice(2) + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0');
+            const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no 0/O/1/I/L to avoid misreading
+            let rand = '';
+            for (let i = 0; i < 4; i++) rand += chars[Math.floor(Math.random() * chars.length)];
+            return `ORD-${ymd}-${rand}`;
+        }
+
         function saveOrder(order) {
-            order.id = Date.now().toString() + '_' + Math.random().toString(36).slice(2, 6);
+            order.id = generateOrderId();
             order.createdAt = new Date().toISOString();
             cache.orders.push(order);
             db.ref('orders/' + order.id).set(order)
@@ -387,11 +396,11 @@
         }
 
         function formatCurrency(n) {
-            return new Intl.NumberFormat('en-MY', { style: 'currency', currency: 'MYR' }).format(n);
+            return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(n);
         }
 
         function formatDate(d) {
-            return new Date(d).toLocaleString('en-MY', {
+            return new Date(d).toLocaleString('id-ID', {
                 day: '2-digit', month: 'short', year: 'numeric',
                 hour: '2-digit', minute: '2-digit'
             });
@@ -760,7 +769,7 @@
                         <input type="text" name="unit" required value="${product?.unit || ''}" placeholder="e.g., 1kg, 500g, Pack of 10" class="w-full px-4 py-2 rounded-lg border">
                     </div>
                     <div>
-                        <label class="block text-sm font-medium mb-1">Default Price (MYR)</label>
+                        <label class="block text-sm font-medium mb-1">Default Price (IDR)</label>
                         <input type="number" name="price" required step="0.01" min="0" value="${product?.price || ''}" class="w-full px-4 py-2 rounded-lg border">
                     </div>
                     <div class="flex gap-2 pt-4">
@@ -1151,8 +1160,9 @@
             const campaign = campaigns.find(c => c.id === campaignId);
             const seller = getSellerInfo(campaign);
             
-            saveOrder({ campaignId, buyerName, items, total, paid: false, delivered: false });
-            showOrderConfirmation({ buyerName, items, total }, seller, campaign);
+            const order = { campaignId, buyerName, items, total, paid: false, delivered: false };
+            saveOrder(order);
+            showOrderConfirmation(order, seller, campaign);
         }
 
         function startBuyerTimer(campaignId) {
@@ -1195,6 +1205,7 @@
                                 <p class="text-secondary text-sm">Digital Invoice for</p>
                                 <p class="text-2xl font-bold">${order.buyerName}</p>
                                 <p class="text-secondary text-sm mt-1">${campaign.name}</p>
+                                <p class="font-mono font-semibold mt-2">Order ID: ${order.id}</p>
                             </div>
                             
                             <div class="border-t border-b border-gray-200 dark:border-gray-700 py-4">
@@ -1234,7 +1245,7 @@
                                 </div>
                             </div>
                             
-                            <button onclick="shareWhatsApp('${order.buyerName}', '${campaign.name}', ${order.total}, '${seller?.bankName || ''}', '${seller?.accountNumber || ''}')" class="w-full py-3 rounded-lg bg-green-500 hover:bg-green-600 text-white font-medium transition flex items-center justify-center gap-2">
+                            <button onclick="shareWhatsApp('${order.id}', '${order.buyerName}', '${campaign.name}', ${order.total}, '${seller?.bankName || ''}', '${seller?.accountNumber || ''}')" class="w-full py-3 rounded-lg bg-green-500 hover:bg-green-600 text-white font-medium transition flex items-center justify-center gap-2">
                                 <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
                                 Share to WhatsApp
                             </button>
@@ -1246,8 +1257,8 @@
             `;
         }
 
-        function shareWhatsApp(name, campaign, total, bank, account) {
-            const msg = `Hi! I've placed an order for ${campaign}.\n\nName: ${name}\nTotal: RM${total.toFixed(2)}\n\nPlease find my payment details:\nBank: ${bank}\nAccount: ${account}\n\nI will transfer the payment shortly. Thank you!`;
+        function shareWhatsApp(orderId, name, campaign, total, bank, account) {
+            const msg = `Halo! Saya ada pesanan pada promo ${campaign}.\nOrder ID: ${orderId}\nNama: ${name}\nTotal: ${formatCurrency(total)}\n\nPembayaran akan segera saya transfer ke rekening yang tercantum:\n${bank} - ${account}\n\nTerima kasih!`;
             window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
         }
 
@@ -1283,6 +1294,7 @@
                                 <table class="w-full text-sm">
                                     <thead class="bg-secondary">
                                         <tr>
+                                            <th class="px-4 py-3 text-left">Order ID</th>
                                             <th class="px-4 py-3 text-left">Campaign</th>
                                             <th class="px-4 py-3 text-left">Buyer</th>
                                             <th class="px-4 py-3 text-left">Items</th>
@@ -1327,6 +1339,7 @@
                 const c = campaigns.find(c => c.id === o.campaignId);
                 return `
                     <tr class="hover:bg-secondary/50">
+                        <td class="px-4 py-3 font-mono text-sm">${o.id}</td>
                         <td class="px-4 py-3">${c ? c.name : 'Unknown'}</td>
                         <td class="px-4 py-3 font-medium">${o.buyerName}</td>
                         <td class="px-4 py-3">
@@ -1363,34 +1376,46 @@
             document.getElementById('ordersTableBody').innerHTML = renderOrdersRows(orders, campaigns);
         }
 
+        // Builds flat row-per-SKU rows: one row per product per order (analytics-ready)
+        function buildSkuRows(orders, campaigns) {
+            const rows = [];
+            orders.forEach(o => {
+                const c = campaigns.find(c => c.id === o.campaignId);
+                (o.items || []).forEach(i => {
+                    rows.push([
+                        c ? c.name : 'Unknown',
+                        o.id,
+                        formatDate(o.createdAt),
+                        o.buyerName,
+                        i.name,
+                        i.unit || '',
+                        i.quantity,
+                        i.price,
+                        i.subtotal,
+                        o.total,
+                        o.paid ? 'Yes' : 'No',
+                        o.delivered ? 'Yes' : 'No'
+                    ]);
+                });
+            });
+            return rows;
+        }
+
+        const SKU_HEADER = ['Campaign', 'Order ID', 'Order Date', 'Buyer Name', 'Product', 'Unit', 'Qty', 'Unit Price (IDR)', 'Subtotal (IDR)', 'Order Total (IDR)', 'Paid', 'Delivered'];
+        const SKU_COLS = [{ wch: 25 }, { wch: 20 }, { wch: 20 }, { wch: 20 }, { wch: 25 }, { wch: 10 }, { wch: 6 }, { wch: 15 }, { wch: 15 }, { wch: 16 }, { wch: 6 }, { wch: 10 }];
+
         function exportExcel(campaignId) {
             const campaigns = getCampaigns();
             const campaign = campaigns.find(c => c.id === campaignId);
             const orders = getCampaignOrders(campaignId);
-            
+
             if (orders.length === 0) { showToast('No orders to export'); return; }
-            
-            const data = [
-                ['Campaign:', campaign.name],
-                ['End Date:', formatDate(campaign.endTime)],
-                ['', ''],
-                ['Order Report'],
-                ['Buyer Name', 'Items', 'Total (MYR)', 'Paid', 'Delivered', 'Date'],
-                ...orders.map(o => [
-                    o.buyerName,
-                    o.items.map(i => `${i.name} x${i.quantity}`).join(', '),
-                    o.total,
-                    o.paid ? 'Yes' : 'No',
-                    o.delivered ? 'Yes' : 'No',
-                    formatDate(o.createdAt)
-                ]),
-                ['', '', '', '', '', ''],
-                ['Total', '', orders.reduce((s, o) => s + o.total, 0), '', '', '']
-            ];
-            
+
+            const data = [SKU_HEADER, ...buildSkuRows(orders, campaigns)];
+
             const wb = XLSX.utils.book_new();
             const ws = XLSX.utils.aoa_to_sheet(data);
-            ws['!cols'] = [{ wch: 20 }, { wch: 40 }, { wch: 15 }, { wch: 8 }, { wch: 10 }, { wch: 20 }];
+            ws['!cols'] = SKU_COLS;
             XLSX.utils.book_append_sheet(wb, ws, 'Orders');
             XLSX.writeFile(wb, `${campaign.name.replace(/[^a-z0-9]/gi, '_')}_orders.xlsx`);
             showToast('Excel exported!');
@@ -1399,33 +1424,14 @@
         function exportAllExcel() {
             const orders = getUserOrders(currentUser.username);
             const campaigns = getUserCampaigns(currentUser.username);
-            
+
             if (orders.length === 0) { showToast('No orders to export'); return; }
-            
-            const data = [
-                ['Master Order Report'],
-                ['Generated:', formatDate(new Date().toISOString())],
-                ['', ''],
-                ['Campaign', 'Buyer Name', 'Items', 'Total (MYR)', 'Paid', 'Delivered', 'Date'],
-                ...orders.map(o => {
-                    const c = campaigns.find(c => c.id === o.campaignId);
-                    return [
-                        c ? c.name : 'Unknown',
-                        o.buyerName,
-                        o.items.map(i => `${i.name} x${i.quantity}`).join(', '),
-                        o.total,
-                        o.paid ? 'Yes' : 'No',
-                        o.delivered ? 'Yes' : 'No',
-                        formatDate(o.createdAt)
-                    ];
-                }),
-                ['', '', '', '', '', '', ''],
-                ['Total', '', '', orders.reduce((s, o) => s + o.total, 0), '', '', '']
-            ];
-            
+
+            const data = [SKU_HEADER, ...buildSkuRows(orders, campaigns)];
+
             const wb = XLSX.utils.book_new();
             const ws = XLSX.utils.aoa_to_sheet(data);
-            ws['!cols'] = [{ wch: 25 }, { wch: 20 }, { wch: 40 }, { wch: 15 }, { wch: 8 }, { wch: 10 }, { wch: 20 }];
+            ws['!cols'] = SKU_COLS;
             XLSX.utils.book_append_sheet(wb, ws, 'All Orders');
             XLSX.writeFile(wb, 'master_orders.xlsx');
             showToast('Excel exported!');
