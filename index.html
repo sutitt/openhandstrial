@@ -406,6 +406,10 @@
             });
         }
 
+        function formatDateOnly(d) {
+            return new Date(d).toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+        }
+
         function getTimeLeft(end) {
             const now = new Date().getTime();
             const diff = new Date(end).getTime() - now;
@@ -959,6 +963,11 @@
                             </div>
                             
                             <div>
+                                <label class="block text-sm font-medium mb-1">Delivery Date (tanggal produk dikirim ke pembeli)</label>
+                                <input type="date" name="deliveryDate" required min="${tomorrow.toISOString().split('T')[0]}" class="w-full px-4 py-2 rounded-lg border">
+                            </div>
+                            
+                            <div>
                                 <label class="block text-sm font-medium mb-3">Select Products</label>
                                 <div class="space-y-3 max-h-80 overflow-y-auto pr-2">
                                     ${products.map(p => `
@@ -1026,6 +1035,7 @@
                 username: currentUser.username,
                 name: fd.get('name').trim(),
                 endTime,
+                deliveryDate: fd.get('deliveryDate'),
                 items,
                 // Seller payment info travels with the campaign so buyers on
                 // other devices can see it (passwords are NOT included)
@@ -1040,10 +1050,8 @@
         }
 
         function renderBuyerView(campaignId) {
-            // Hide salesperson navigation for buyer view
-            document.getElementById('navLinks').innerHTML = `
-                <a href="${location.pathname}" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 dark:hover:bg-gray-700 text-sm font-medium transition">← Back to Home</a>
-            `;
+            // Buyers must not reach the salesperson dashboard — no nav links at all
+            document.getElementById('navLinks').innerHTML = '';
             
             const campaigns = getCampaigns();
             const campaign = campaigns.find(c => c.id === campaignId);
@@ -1081,14 +1089,33 @@
                     <div class="card rounded-xl p-6 mb-6">
                         <h2 class="text-2xl font-bold mb-1">${campaign.name}</h2>
                         <p class="text-secondary text-sm">Organized by ${seller?.name || 'Unknown'}</p>
+                        ${campaign.deliveryDate ? `
+                            <div class="mt-3 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg text-sm">
+                                Produk pada promo <strong>${campaign.name}</strong> akan dikirimkan pada: <strong>${formatDateOnly(campaign.deliveryDate)}</strong>
+                            </div>
+                        ` : ''}
                     </div>
                     
                     <form id="buyerForm" class="space-y-4">
                         <input type="hidden" name="campaignId" value="${campaignId}">
                         
-                        <div class="card rounded-xl p-6">
-                            <label class="block text-sm font-medium mb-2">Your Name</label>
-                            <input type="text" name="buyerName" required ${isExpired ? 'disabled' : ''} placeholder="Enter your name" class="w-full px-4 py-2 rounded-lg border">
+                        <div class="card rounded-xl p-6 space-y-4">
+                            <div>
+                                <label class="block text-sm font-medium mb-2">Your Name</label>
+                                <input type="text" name="buyerName" required ${isExpired ? 'disabled' : ''} placeholder="Enter your name" class="w-full px-4 py-2 rounded-lg border">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium mb-2">Nomor HP</label>
+                                <input type="tel" name="buyerPhone" required ${isExpired ? 'disabled' : ''} placeholder="08xxxxxxxxxx" class="w-full px-4 py-2 rounded-lg border">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium mb-2">Alamat Pengiriman</label>
+                                <textarea name="buyerAddress" required ${isExpired ? 'disabled' : ''} rows="2" placeholder="Alamat lengkap tujuan pengiriman" class="w-full px-4 py-2 rounded-lg border"></textarea>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium mb-2">Catatan <span class="text-secondary font-normal">(opsional)</span></label>
+                                <textarea name="buyerNotes" ${isExpired ? 'disabled' : ''} rows="2" placeholder="Detail khusus, mis. nama gedung, lantai, patokan" class="w-full px-4 py-2 rounded-lg border"></textarea>
+                            </div>
                         </div>
                         
                         <div class="card rounded-xl overflow-hidden">
@@ -1160,7 +1187,13 @@
             const campaign = campaigns.find(c => c.id === campaignId);
             const seller = getSellerInfo(campaign);
             
-            const order = { campaignId, buyerName, items, total, paid: false, delivered: false };
+            const order = {
+                campaignId, buyerName, items, total,
+                buyerPhone: (fd.get('buyerPhone') || '').trim(),
+                buyerAddress: (fd.get('buyerAddress') || '').trim(),
+                buyerNotes: (fd.get('buyerNotes') || '').trim(),
+                paid: false, delivered: false
+            };
             saveOrder(order);
             showOrderConfirmation(order, seller, campaign);
         }
@@ -1201,11 +1234,17 @@
                         </div>
                         
                         <div class="p-6 space-y-6">
-                            <div class="text-center">
-                                <p class="text-secondary text-sm">Digital Invoice for</p>
-                                <p class="text-2xl font-bold">${order.buyerName}</p>
-                                <p class="text-secondary text-sm mt-1">${campaign.name}</p>
-                                <p class="font-mono font-semibold mt-2">Order ID: ${order.id}</p>
+                            <div>
+                                <p class="text-center text-lg font-bold">Bukti Pemesanan ${campaign.name}</p>
+                                <div class="mt-4 text-left text-sm space-y-1">
+                                    <p>Diterbitkan untuk: <strong>${order.buyerName}</strong></p>
+                                    <p>Order ID: <span class="font-mono font-semibold">${order.id}</span></p>
+                                </div>
+                                ${campaign.deliveryDate ? `
+                                    <div class="mt-3 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg text-sm text-left">
+                                        Produk pada promo <strong>${campaign.name}</strong> akan dikirimkan pada: <strong>${formatDateOnly(campaign.deliveryDate)}</strong>
+                                    </div>
+                                ` : ''}
                             </div>
                             
                             <div class="border-t border-b border-gray-200 dark:border-gray-700 py-4">
@@ -1237,7 +1276,7 @@
                             </div>
                             
                             <div class="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-4">
-                                <h4 class="font-semibold mb-2">Payment Details</h4>
+                                <h4 class="font-semibold mb-2">Pembayaran ditransfer ke:</h4>
                                 <div class="space-y-1 text-sm">
                                     <p><span class="text-secondary">Bank:</span> ${seller?.bankName || 'N/A'}</p>
                                     <p><span class="text-secondary">Account:</span> ${seller?.accountNumber || 'N/A'}</p>
@@ -1251,6 +1290,8 @@
                             </button>
                             
                             <button onclick="window.print()" class="w-full py-3 rounded-lg bg-secondary hover:bg-gray-200 font-medium transition">Print / Save as PDF</button>
+                            
+                            <button onclick="renderBuyerView('${campaign.id}')" class="w-full py-3 rounded-lg border-2 border-blue-500 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 font-medium transition">Buat Order Lagi</button>
                         </div>
                     </div>
                 </div>
@@ -1346,6 +1387,11 @@
                             <button onclick="toggleDetails(this)" class="text-blue-500 hover:underline text-sm">${o.items.length} items (view)</button>
                             <div class="hidden mt-2 p-3 bg-secondary rounded text-sm">
                                 ${o.items.map(i => `<div class="flex justify-between"><span>${i.name} x${i.quantity}</span><span>${formatCurrency(i.subtotal)}</span></div>`).join('')}
+                                <div class="mt-2 pt-2 border-t border-gray-300 dark:border-gray-600 space-y-1">
+                                    <div><span class="text-secondary">HP:</span> ${o.buyerPhone || '-'}</div>
+                                    <div><span class="text-secondary">Alamat:</span> ${o.buyerAddress || '-'}</div>
+                                    <div><span class="text-secondary">Catatan:</span> ${o.buyerNotes || '-'}</div>
+                                </div>
                             </div>
                         </td>
                         <td class="px-4 py-3 font-medium">${formatCurrency(o.total)}</td>
@@ -1387,6 +1433,9 @@
                         o.id,
                         formatDate(o.createdAt),
                         o.buyerName,
+                        o.buyerPhone || '',
+                        o.buyerAddress || '',
+                        o.buyerNotes || '',
                         i.name,
                         i.unit || '',
                         i.quantity,
@@ -1401,8 +1450,8 @@
             return rows;
         }
 
-        const SKU_HEADER = ['Campaign', 'Order ID', 'Order Date', 'Buyer Name', 'Product', 'Unit', 'Qty', 'Unit Price (IDR)', 'Subtotal (IDR)', 'Order Total (IDR)', 'Paid', 'Delivered'];
-        const SKU_COLS = [{ wch: 25 }, { wch: 20 }, { wch: 20 }, { wch: 20 }, { wch: 25 }, { wch: 10 }, { wch: 6 }, { wch: 15 }, { wch: 15 }, { wch: 16 }, { wch: 6 }, { wch: 10 }];
+        const SKU_HEADER = ['Campaign', 'Order ID', 'Order Date', 'Buyer Name', 'Phone', 'Address', 'Notes', 'Product', 'Unit', 'Qty', 'Unit Price (IDR)', 'Subtotal (IDR)', 'Order Total (IDR)', 'Paid', 'Delivered'];
+        const SKU_COLS = [{ wch: 25 }, { wch: 20 }, { wch: 20 }, { wch: 20 }, { wch: 15 }, { wch: 35 }, { wch: 25 }, { wch: 25 }, { wch: 10 }, { wch: 6 }, { wch: 15 }, { wch: 15 }, { wch: 16 }, { wch: 6 }, { wch: 10 }];
 
         function exportExcel(campaignId) {
             const campaigns = getCampaigns();
