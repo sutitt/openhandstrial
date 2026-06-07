@@ -1167,7 +1167,7 @@
             document.getElementById('buyerForm').addEventListener('submit', handleBuyerSubmit);
             
             if (!isExpired) {
-                startBuyerTimer(campaignId);
+                startBuyerTimer(campaignId, notStarted);
             }
         }
 
@@ -1220,14 +1220,23 @@
             showOrderConfirmation(order, seller, campaign);
         }
 
-        function startBuyerTimer(campaignId) {
+        function startBuyerTimer(campaignId, wasNotStarted) {
             const interval = setInterval(() => {
                 const campaigns = getCampaigns();
                 const campaign = campaigns.find(c => c.id === campaignId);
                 
                 if (!campaign) { clearInterval(interval); return; }
                 
-                const notStarted = campaign.startTime && new Date(campaign.startTime).getTime() > Date.now();
+                const notStarted = !!(campaign.startTime && new Date(campaign.startTime).getTime() > Date.now());
+                
+                // Transition: order window just opened -> unlock the form automatically
+                if (wasNotStarted && !notStarted) {
+                    clearInterval(interval);
+                    showToast('Pemesanan sudah dibuka!');
+                    renderBuyerView(campaignId);
+                    return;
+                }
+                
                 const tl = getTimeLeft(notStarted ? campaign.startTime : campaign.endTime);
                 
                 if (tl.expired) {
