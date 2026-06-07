@@ -154,6 +154,24 @@
         </div>
     </div>
 
+    <!-- Firebase SDK (compat build, works with classic scripts) -->
+    <script src="https://www.gstatic.com/firebasejs/12.14.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/12.14.0/firebase-database-compat.js"></script>
+    <script>
+        // Firebase configuration (connection address for this app's shared database)
+        const firebaseConfig = {
+            apiKey: "AIzaSyCDy9naHIzTbMtw0L1qX-9C1Q9wM9mc6yA",
+            authDomain: "office-preorder-hub.firebaseapp.com",
+            databaseURL: "https://office-preorder-hub-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "office-preorder-hub",
+            storageBucket: "office-preorder-hub.firebasestorage.app",
+            messagingSenderId: "521287484005",
+            appId: "1:521287484005:web:7feb1dc81286db01f0bc8c"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+    </script>
+
     <script>
         // Storage Keys
         const KEYS = {
@@ -168,9 +186,17 @@
         // State
         let currentUser = null;
 
+        // Shared data cache (mirrors Firebase; refreshed live by listeners below)
+        const cache = { campaigns: [], orders: [] };
+
+        function snapToArray(snap) {
+            const v = snap.val();
+            return v ? Object.values(v) : [];
+        }
+
         // Initialize
-        function init() {
-            initStorage();
+        async function init() {
+            await initStorage();
             initTheme();
             restoreSession();
             renderNavigation();
@@ -188,11 +214,24 @@
         }
 
         // Storage Functions
-        function initStorage() {
+        // Users & Products stay in localStorage (this device only).
+        // Campaigns & Orders live in Firebase (shared across all devices).
+        async function initStorage() {
             if (!localStorage.getItem(KEYS.USERS)) localStorage.setItem(KEYS.USERS, '[]');
             if (!localStorage.getItem(KEYS.PRODUCTS)) localStorage.setItem(KEYS.PRODUCTS, '[]');
-            if (!localStorage.getItem(KEYS.CAMPAIGNS)) localStorage.setItem(KEYS.CAMPAIGNS, '[]');
-            if (!localStorage.getItem(KEYS.ORDERS)) localStorage.setItem(KEYS.ORDERS, '[]');
+
+            // First load from Firebase (wait max 8s so a bad connection never blanks the page)
+            await Promise.race([
+                Promise.all([
+                    db.ref('campaigns').once('value').then(s => { cache.campaigns = snapToArray(s); }),
+                    db.ref('orders').once('value').then(s => { cache.orders = snapToArray(s); })
+                ]),
+                new Promise(resolve => setTimeout(resolve, 8000))
+            ]);
+
+            // Keep cache updated live whenever anyone changes the shared data
+            db.ref('campaigns').on('value', s => { cache.campaigns = snapToArray(s); });
+            db.ref('orders').on('value', s => { cache.orders = snapToArray(s); });
         }
 
         function getData(key) {
@@ -267,28 +306,31 @@
             setData(KEYS.PRODUCTS, products);
         }
 
-        // Campaigns
-        function getCampaigns() { return getData(KEYS.CAMPAIGNS); }
+        // Campaigns (shared via Firebase)
+        function getCampaigns() { return cache.campaigns; }
         function getUserCampaigns(username) { return getCampaigns().filter(c => c.username === username); }
         function saveCampaign(campaign) {
-            const campaigns = getCampaigns();
-            if (campaign.id) {
-                const idx = campaigns.findIndex(c => c.id === campaign.id);
-                if (idx >= 0) campaigns[idx] = campaign;
-            } else {
+            if (!campaign.id) {
                 campaign.id = Date.now().toString();
                 campaign.createdAt = new Date().toISOString();
-                campaigns.push(campaign);
             }
-            setData(KEYS.CAMPAIGNS, campaigns);
+            // Update local cache immediately, then write to the shared database
+            const idx = cache.campaigns.findIndex(c => c.id === campaign.id);
+            if (idx >= 0) cache.campaigns[idx] = campaign;
+            else cache.campaigns.push(campaign);
+            db.ref('campaigns/' + campaign.id).set(campaign)
+                .catch(() => showToast('Warning: failed to sync campaign. Check your connection.'));
         }
         function deleteCampaign(id, username) {
-            const campaigns = getCampaigns().filter(c => !(c.id === id && c.username === username));
-            setData(KEYS.CAMPAIGNS, campaigns);
+            const target = cache.campaigns.find(c => c.id === id && c.username === username);
+            if (!target) return;
+            cache.campaigns = cache.campaigns.filter(c => c.id !== id);
+            db.ref('campaigns/' + id).remove()
+                .catch(() => showToast('Warning: failed to delete from server. Check your connection.'));
         }
 
-        // Orders
-        function getOrders() { return getData(KEYS.ORDERS); }
+        // Orders (shared via Firebase)
+        function getOrders() { return cache.orders; }
         function getCampaignOrders(campaignId) { return getOrders().filter(o => o.campaignId === campaignId); }
         function getUserOrders(username) {
             return getOrders().filter(o => {
@@ -297,19 +339,34 @@
             });
         }
         function saveOrder(order) {
-            order.id = Date.now().toString();
+            order.id = Date.now().toString() + '_' + Math.random().toString(36).slice(2, 6);
             order.createdAt = new Date().toISOString();
-            const orders = getOrders();
-            orders.push(order);
-            setData(KEYS.ORDERS, orders);
+            cache.orders.push(order);
+            db.ref('orders/' + order.id).set(order)
+                .catch(() => showToast('Warning: order may not have been saved. Check your connection.'));
         }
         function updateOrderStatus(id, field, value) {
-            const orders = getOrders();
-            const idx = orders.findIndex(o => o.id === id);
+            const idx = cache.orders.findIndex(o => o.id === id);
             if (idx >= 0) {
-                orders[idx][field] = value;
-                setData(KEYS.ORDERS, orders);
+                cache.orders[idx][field] = value;
+                db.ref('orders/' + id + '/' + field).set(value)
+                    .catch(() => showToast('Warning: status change failed to sync. Check your connection.'));
             }
+        }
+
+        // Seller display info: prefer data embedded in the campaign (works on any
+        // device); fall back to this device's local user store (old campaigns)
+        function getSellerInfo(campaign) {
+            if (!campaign) return null;
+            if (campaign.sellerName || campaign.sellerBankName) {
+                return {
+                    name: campaign.sellerName,
+                    bankName: campaign.sellerBankName,
+                    accountNumber: campaign.sellerAccountNumber,
+                    accountName: campaign.sellerAccountName
+                };
+            }
+            return getUsers().find(u => u.username === campaign.username) || null;
         }
 
         // UI Helpers
@@ -960,7 +1017,13 @@
                 username: currentUser.username,
                 name: fd.get('name').trim(),
                 endTime,
-                items
+                items,
+                // Seller payment info travels with the campaign so buyers on
+                // other devices can see it (passwords are NOT included)
+                sellerName: currentUser.name || '',
+                sellerBankName: currentUser.bankName || '',
+                sellerAccountNumber: currentUser.accountNumber || '',
+                sellerAccountName: currentUser.accountName || ''
             });
             
             showToast('Campaign created!');
@@ -988,7 +1051,7 @@
             
             const tl = getTimeLeft(campaign.endTime);
             const isExpired = tl.expired;
-            const seller = getUsers().find(u => u.username === campaign.username);
+            const seller = getSellerInfo(campaign);
             
             document.getElementById('mainContent').innerHTML = `
                 <div class="fade-in max-w-2xl mx-auto">
@@ -1086,7 +1149,7 @@
             const total = items.reduce((s, i) => s + i.subtotal, 0);
             const campaigns = getCampaigns();
             const campaign = campaigns.find(c => c.id === campaignId);
-            const seller = getUsers().find(u => u.username === campaign.username);
+            const seller = getSellerInfo(campaign);
             
             saveOrder({ campaignId, buyerName, items, total, paid: false, delivered: false });
             showOrderConfirmation({ buyerName, items, total }, seller, campaign);
