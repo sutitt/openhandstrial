@@ -406,6 +406,63 @@
             }
         }
 
+        // --- Batch E1: management helpers ---
+        // Set a flag (archived / closed) on a campaign the current user owns
+        function setCampaignFlag(id, field, value) {
+            const c = cache.campaigns.find(c => c.id === id && c.username === currentUser.username);
+            if (!c) return;
+            c[field] = value;
+            db.ref('campaigns/' + id + '/' + field).set(value)
+                .catch(() => showToast('Gagal menyinkronkan. Cek koneksi.'));
+        }
+
+        // Edit remaining stock live. Baseline (stockInitial) follows the new stock so the
+        // scarcity label stays sensible: units already sold stay fixed, new remaining = new baseline.
+        function saveStockEdits(campaignId, newStocks) {
+            const c = cache.campaigns.find(c => c.id === campaignId && c.username === currentUser.username);
+            if (!c) return;
+            (c.items || []).forEach((item, idx) => {
+                if (!(idx in newStocks)) return;
+                const N = newStocks[idx];
+                if (N == null || isNaN(N)) return;
+                const oldStock = item.stock, oldInit = item.stockInitial;
+                const sold = (oldInit != null && oldStock != null && oldInit >= oldStock) ? (oldInit - oldStock) : 0;
+                item.stock = N;
+                item.stockInitial = sold + N;
+                db.ref(`campaigns/${campaignId}/items/${idx}/stock`).set(item.stock).catch(() => {});
+                db.ref(`campaigns/${campaignId}/items/${idx}/stockInitial`).set(item.stockInitial).catch(() => {});
+            });
+        }
+
+        // Cancel an order: mark cancelled (kept for history) and refill stock for its tracked items
+        async function cancelOrder(id) {
+            const o = cache.orders.find(o => o.id === id);
+            if (!o || o.cancelled) return;
+            const c = cache.campaigns.find(c => c.id === o.campaignId);
+            if (c) {
+                for (const it of (o.items || [])) {
+                    if (it.idx == null) continue;
+                    const ci = c.items[it.idx];
+                    if (ci && ci.stock != null) {
+                        try {
+                            await db.ref(`campaigns/${o.campaignId}/items/${it.idx}/stock`).transaction(cur => (cur || 0) + it.quantity);
+                            ci.stock = (ci.stock || 0) + it.quantity;
+                        } catch (e) {}
+                    }
+                }
+            }
+            o.cancelled = true;
+            db.ref('orders/' + id + '/cancelled').set(true).catch(() => {});
+        }
+
+        // Edit buyer contact fields only (quantity changes go via cancel + re-order)
+        function saveOrderEdit(id, fields) {
+            const o = cache.orders.find(o => o.id === id);
+            if (!o) return;
+            Object.assign(o, fields);
+            db.ref('orders/' + id).update(fields).catch(() => showToast('Gagal menyimpan. Cek koneksi.'));
+        }
+
         // Seller display info: prefer data embedded in the campaign (works on any
         // device); fall back to this device's local user store (old campaigns)
         function getSellerInfo(campaign) {
@@ -751,7 +808,8 @@
 
         function toggleStatus(orderId, field, value) {
             updateOrderStatus(orderId, field, value);
-            renderDashboard();
+            if (document.getElementById('ordersTableBody')) renderMasterTracker();
+            else renderDashboard();
         }
 
         function renderCatalog() {
@@ -903,9 +961,15 @@
             renderCatalog();
         }
 
-        function renderCampaigns() {
+        let campaignFilter = 'current';
+        function renderCampaigns(filter) {
             if (!currentUser) { renderLanding(); return; }
-            const campaigns = getUserCampaigns(currentUser.username);
+            campaignFilter = filter || campaignFilter || 'current';
+            const all = getUserCampaigns(currentUser.username);
+            const campaigns = all.filter(c => campaignFilter === 'archived' ? c.archived
+                : campaignFilter === 'all' ? true
+                : !c.archived);
+            const archivedCount = all.filter(c => c.archived).length;
             
             document.getElementById('mainContent').innerHTML = `
                 <div class="fade-in">
@@ -916,30 +980,42 @@
                             New Campaign
                         </button>
                     </div>
+
+                    <div class="mb-4 flex gap-2 text-sm">
+                        <button onclick="renderCampaigns('current')" class="px-3 py-1.5 rounded-lg font-medium transition ${campaignFilter === 'current' ? 'btn-primary text-white' : 'bg-secondary hover:bg-gray-200'}">Aktif & Ditutup</button>
+                        <button onclick="renderCampaigns('archived')" class="px-3 py-1.5 rounded-lg font-medium transition ${campaignFilter === 'archived' ? 'btn-primary text-white' : 'bg-secondary hover:bg-gray-200'}">Diarsipkan${archivedCount ? ` (${archivedCount})` : ''}</button>
+                        <button onclick="renderCampaigns('all')" class="px-3 py-1.5 rounded-lg font-medium transition ${campaignFilter === 'all' ? 'btn-primary text-white' : 'bg-secondary hover:bg-gray-200'}">Semua</button>
+                    </div>
                     
                     ${campaigns.length === 0 ? `
                         <div class="card rounded-xl p-12 text-center">
                             <svg class="w-16 h-16 mx-auto text-gray-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path>
                             </svg>
-                            <p class="text-lg text-secondary">No campaigns yet</p>
-                            <p class="text-sm text-secondary mt-1">Create your first campaign to start collecting orders</p>
+                            <p class="text-lg text-secondary">${campaignFilter === 'archived' ? 'Tidak ada campaign diarsipkan' : 'No campaigns yet'}</p>
+                            <p class="text-sm text-secondary mt-1">${campaignFilter === 'archived' ? '' : 'Create your first campaign to start collecting orders'}</p>
                         </div>
                     ` : `
                         <div class="grid gap-4">
                             ${campaigns.map(c => {
-                                const orders = getCampaignOrders(c.id);
+                                const orders = getCampaignOrders(c.id).filter(o => !o.cancelled);
                                 const tl = getTimeLeft(c.endTime);
-                                const isActive = !tl.expired;
+                                const expired = tl.expired;
+                                const closed = !!c.closed;
+                                const archived = !!c.archived;
+                                const isActive = !expired && !closed && !archived;
+                                const status = archived ? { t: 'Diarsipkan', cls: 'bg-gray-200 text-gray-600' }
+                                    : closed ? { t: 'Ditutup', cls: 'bg-orange-100 text-orange-700' }
+                                    : expired ? { t: 'Closed', cls: 'bg-gray-200 text-gray-600' }
+                                    : { t: 'Active', cls: 'bg-green-100 text-green-700' };
+                                const borderCls = isActive ? 'border-l-green-500' : (closed ? 'border-l-orange-400' : 'border-l-gray-400');
                                 return `
-                                    <div class="card rounded-xl p-6 ${isActive ? 'border-l-4 border-l-green-500' : 'border-l-4 border-l-gray-400 opacity-75'}">
+                                    <div class="card rounded-xl p-6 border-l-4 ${borderCls} ${isActive ? '' : 'opacity-80'}">
                                         <div class="flex flex-wrap items-start justify-between gap-4">
                                             <div class="flex-1 min-w-0">
                                                 <div class="flex items-center gap-2 mb-2">
                                                     <h3 class="font-semibold text-lg">${c.name}</h3>
-                                                    <span class="px-2 py-0.5 rounded text-xs font-medium ${isActive ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-600'}">
-                                                        ${isActive ? 'Active' : 'Closed'}
-                                                    </span>
+                                                    <span class="px-2 py-0.5 rounded text-xs font-medium ${status.cls}">${status.t}</span>
                                                 </div>
                                                 <div class="flex flex-wrap gap-4 text-sm text-secondary">
                                                     <span>📦 ${c.items.length} products</span>
@@ -952,18 +1028,16 @@
                                                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                                                             <span class="font-mono">${tl.d > 0 ? tl.d + 'd ' : ''}${pad(tl.h)}:${pad(tl.m)}:${pad(tl.s)}</span>
                                                         </div>
-                                                    ` : `<span class="text-red-500">Closed on ${formatDate(c.endTime)}</span>`}
+                                                    ` : closed ? `<span class="text-orange-600">Ditutup manual oleh sales</span>`
+                                                       : `<span class="text-red-500">Closed on ${formatDate(c.endTime)}</span>`}
                                                 </div>
                                             </div>
                                             <div class="flex flex-wrap gap-2">
-                                                <button onclick="copyLink('${c.id}')" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 text-sm font-medium transition flex items-center gap-1">
-                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
-                                                    Copy Link
-                                                </button>
-                                                <button onclick="exportExcel('${c.id}')" class="px-3 py-1.5 rounded-lg bg-green-500/10 hover:bg-green-500/20 text-green-600 text-sm font-medium transition flex items-center gap-1">
-                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-                                                    Export
-                                                </button>
+                                                <button onclick="copyLink('${c.id}')" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 text-sm font-medium transition">Copy Link</button>
+                                                <button onclick="exportExcel('${c.id}')" class="px-3 py-1.5 rounded-lg bg-green-500/10 hover:bg-green-500/20 text-green-600 text-sm font-medium transition">Export</button>
+                                                <button onclick="showStockEditModal('${c.id}')" class="px-3 py-1.5 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 text-sm font-medium transition">Edit Stok</button>
+                                                ${!archived && !expired ? `<button onclick="toggleCampaignClosed('${c.id}', ${!closed})" class="px-3 py-1.5 rounded-lg bg-orange-500/10 hover:bg-orange-500/20 text-orange-600 text-sm font-medium transition">${closed ? 'Buka Lagi' : 'Tutup'}</button>` : ''}
+                                                <button onclick="toggleCampaignArchived('${c.id}', ${!archived})" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 text-sm font-medium transition">${archived ? 'Pulihkan' : 'Arsip'}</button>
                                                 <button onclick="confirmDeleteCampaign('${c.id}')" class="px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-500 text-sm font-medium transition">Delete</button>
                                             </div>
                                         </div>
@@ -974,6 +1048,55 @@
                     `}
                 </div>
             `;
+        }
+
+        function toggleCampaignClosed(id, val) {
+            setCampaignFlag(id, 'closed', val);
+            showToast(val ? 'Campaign ditutup' : 'Campaign dibuka lagi');
+            renderCampaigns();
+        }
+
+        function toggleCampaignArchived(id, val) {
+            setCampaignFlag(id, 'archived', val);
+            showToast(val ? 'Campaign diarsipkan' : 'Campaign dipulihkan');
+            renderCampaigns();
+        }
+
+        function showStockEditModal(campaignId) {
+            const c = getUserCampaigns(currentUser.username).find(c => c.id === campaignId);
+            if (!c) return;
+            showModal(`
+                <h3 class="text-lg font-semibold mb-1">Edit Stok — ${c.name}</h3>
+                <p class="text-sm text-secondary mb-4">Kosongkan = produk tanpa batas stok. Mengisi angka pada produk tanpa batas akan mulai membatasi stoknya.</p>
+                <form id="stockEditForm" class="space-y-3">
+                    ${c.items.map((item, idx) => `
+                        <div class="flex items-center gap-3">
+                            <div class="flex-1">
+                                <p class="font-medium text-sm">${item.name}</p>
+                                <p class="text-xs text-secondary">${item.stock != null ? 'Sisa sekarang: ' + item.stock : 'Saat ini: tanpa batas'}</p>
+                            </div>
+                            <input type="number" name="stock_${idx}" min="0" value="${item.stock != null ? item.stock : ''}" placeholder="tanpa batas" class="w-28 px-3 py-1.5 rounded border text-sm">
+                        </div>
+                    `).join('')}
+                    <div class="flex gap-2 pt-4">
+                        <button type="button" onclick="closeModal()" class="flex-1 py-2 rounded-lg bg-secondary hover:bg-gray-200 transition">Cancel</button>
+                        <button type="submit" class="flex-1 py-2 rounded-lg btn-primary text-white font-medium transition">Simpan Stok</button>
+                    </div>
+                </form>
+            `);
+            document.getElementById('stockEditForm').addEventListener('submit', e => {
+                e.preventDefault();
+                const fd = new FormData(e.target);
+                const newStocks = {};
+                c.items.forEach((item, idx) => {
+                    const raw = fd.get('stock_' + idx);
+                    if (raw !== '' && raw !== null) newStocks[idx] = parseInt(raw);
+                });
+                saveStockEdits(campaignId, newStocks);
+                closeModal();
+                showToast('Stok diperbarui');
+                renderCampaigns();
+            });
         }
 
         function copyLink(id) {
@@ -1177,8 +1300,9 @@
             
             const isExpired = getTimeLeft(campaign.endTime).expired;
             const notStarted = campaign.startTime && new Date(campaign.startTime).getTime() > Date.now();
+            const forceClosed = !!campaign.closed;
             const tl = getTimeLeft(notStarted ? campaign.startTime : campaign.endTime);
-            const locked = isExpired || notStarted;
+            const locked = isExpired || notStarted || forceClosed;
             const seller = getSellerInfo(campaign);
             
             document.getElementById('mainContent').innerHTML = `
@@ -1286,7 +1410,7 @@
                         </div>
                         
                         <button type="submit" ${locked ? 'disabled' : ''} class="w-full py-4 rounded-xl btn-primary text-white font-semibold text-lg transition ${locked ? 'opacity-50 cursor-not-allowed' : ''}">
-                            ${isExpired ? 'Campaign Closed' : notStarted ? 'Belum Dibuka' : 'Submit Order'}
+                            ${forceClosed ? 'Pemesanan Ditutup' : isExpired ? 'Campaign Closed' : notStarted ? 'Belum Dibuka' : 'Submit Order'}
                         </button>
                     </form>
                 </div>
@@ -1596,6 +1720,7 @@
             if (!currentUser) { renderLanding(); return; }
             const campaigns = getUserCampaigns(currentUser.username);
             const orders = getUserOrders(currentUser.username);
+            const active = orders.filter(o => !o.cancelled);
             
             document.getElementById('mainContent').innerHTML = `
                 <div class="fade-in">
@@ -1617,19 +1742,19 @@
                     <div class="mb-6 grid grid-cols-2 md:grid-cols-4 gap-4">
                         <div class="card rounded-xl p-4 text-center">
                             <p class="text-sm text-secondary">Total Orders</p>
-                            <p class="text-2xl font-bold">${orders.length}</p>
+                            <p class="text-2xl font-bold">${active.length}</p>
                         </div>
                         <div class="card rounded-xl p-4 text-center">
                             <p class="text-sm text-secondary">Total Revenue</p>
-                            <p class="text-2xl font-bold">${formatCurrency(orders.reduce((s, o) => s + o.total, 0))}</p>
+                            <p class="text-2xl font-bold">${formatCurrency(active.reduce((s, o) => s + o.total, 0))}</p>
                         </div>
                         <div class="card rounded-xl p-4 text-center">
                             <p class="text-sm text-secondary">Paid / Unpaid</p>
-                            <p class="text-2xl font-bold"><span class="text-green-600">${orders.filter(o => o.paid).length}</span> / <span class="text-yellow-600">${orders.filter(o => !o.paid).length}</span></p>
+                            <p class="text-2xl font-bold"><span class="text-green-600">${active.filter(o => o.paid).length}</span> / <span class="text-yellow-600">${active.filter(o => !o.paid).length}</span></p>
                         </div>
                         <div class="card rounded-xl p-4 text-center">
                             <p class="text-sm text-secondary">Delivered / Undelivered</p>
-                            <p class="text-2xl font-bold"><span class="text-green-600">${orders.filter(o => o.delivered).length}</span> / <span class="text-yellow-600">${orders.filter(o => !o.delivered).length}</span></p>
+                            <p class="text-2xl font-bold"><span class="text-green-600">${active.filter(o => o.delivered).length}</span> / <span class="text-yellow-600">${active.filter(o => !o.delivered).length}</span></p>
                         </div>
                     </div>
                     
@@ -1651,6 +1776,7 @@
                                             <th class="px-4 py-3 text-left">Paid</th>
                                             <th class="px-4 py-3 text-left">Delivered</th>
                                             <th class="px-4 py-3 text-left">Date</th>
+                                            <th class="px-4 py-3 text-left">Aksi</th>
                                         </tr>
                                     </thead>
                                     <tbody id="ordersTableBody" class="divide-y divide-gray-200 dark:divide-gray-700">
@@ -1667,11 +1793,12 @@
         function renderOrdersRows(orders, campaigns) {
             return orders.map(o => {
                 const c = campaigns.find(c => c.id === o.campaignId);
+                const cancelled = !!o.cancelled;
                 return `
-                    <tr class="hover:bg-secondary/50">
-                        <td class="px-4 py-3 font-mono text-sm">${o.id}</td>
+                    <tr class="hover:bg-secondary/50 ${cancelled ? 'opacity-60' : ''}">
+                        <td class="px-4 py-3 font-mono text-sm">${o.id}${cancelled ? ' <span class="ml-1 px-2 py-0.5 rounded text-xs bg-red-100 text-red-700">Dibatalkan</span>' : ''}</td>
                         <td class="px-4 py-3">${c ? c.name : 'Unknown'}</td>
-                        <td class="px-4 py-3 font-medium">${o.buyerName}</td>
+                        <td class="px-4 py-3 font-medium ${cancelled ? 'line-through' : ''}">${o.buyerName}</td>
                         <td class="px-4 py-3">
                             <button onclick="toggleDetails(this)" class="text-blue-500 hover:underline text-sm">${o.items.length} items (view)</button>
                             <div class="hidden mt-2 p-3 bg-secondary rounded text-sm">
@@ -1684,21 +1811,98 @@
                                 </div>
                             </div>
                         </td>
-                        <td class="px-4 py-3 font-medium">${formatCurrency(o.total)}</td>
+                        <td class="px-4 py-3 font-medium ${cancelled ? 'line-through' : ''}">${formatCurrency(o.total)}</td>
                         <td class="px-4 py-3">
-                            <button onclick="toggleStatus('${o.id}', 'paid', ${!o.paid})" class="px-3 py-1 rounded text-sm font-medium ${o.paid ? 'bg-green-100 text-green-700 dark:bg-green-900/30' : 'bg-gray-200 text-gray-600'}">
+                            <button ${cancelled ? 'disabled' : ''} onclick="toggleStatus('${o.id}', 'paid', ${!o.paid})" class="px-3 py-1 rounded text-sm font-medium ${cancelled ? 'opacity-50 cursor-not-allowed bg-gray-200 text-gray-500' : (o.paid ? 'bg-green-100 text-green-700 dark:bg-green-900/30' : 'bg-gray-200 text-gray-600')}">
                                 ${o.paid ? '✓ Paid' : 'Unpaid'}
                             </button>
                         </td>
                         <td class="px-4 py-3">
-                            <button onclick="toggleStatus('${o.id}', 'delivered', ${!o.delivered})" class="px-3 py-1 rounded text-sm font-medium ${o.delivered ? 'bg-green-100 text-green-700 dark:bg-green-900/30' : 'bg-gray-200 text-gray-600'}">
+                            <button ${cancelled ? 'disabled' : ''} onclick="toggleStatus('${o.id}', 'delivered', ${!o.delivered})" class="px-3 py-1 rounded text-sm font-medium ${cancelled ? 'opacity-50 cursor-not-allowed bg-gray-200 text-gray-500' : (o.delivered ? 'bg-green-100 text-green-700 dark:bg-green-900/30' : 'bg-gray-200 text-gray-600')}">
                                 ${o.delivered ? '✓ Delivered' : 'Pending'}
                             </button>
                         </td>
                         <td class="px-4 py-3 text-sm text-secondary">${formatDate(o.createdAt)}</td>
+                        <td class="px-4 py-3">
+                            ${cancelled ? '<span class="text-xs text-secondary">—</span>' : `
+                                <div class="flex gap-1">
+                                    <button onclick="showOrderEditModal('${o.id}')" class="px-2 py-1 rounded text-xs font-medium bg-blue-500/10 text-blue-600 hover:bg-blue-500/20 transition">Edit</button>
+                                    <button onclick="confirmCancelOrder('${o.id}')" class="px-2 py-1 rounded text-xs font-medium bg-red-500/10 text-red-500 hover:bg-red-500/20 transition">Batal</button>
+                                </div>
+                            `}
+                        </td>
                     </tr>
                 `;
             }).join('');
+        }
+
+        function confirmCancelOrder(id) {
+            const o = cache.orders.find(o => o.id === id);
+            if (!o) return;
+            showModal(`
+                <h3 class="text-lg font-semibold mb-2">Batalkan Order?</h3>
+                <p class="text-secondary mb-6">Order <span class="font-mono">${id}</span> akan ditandai dibatalkan dan stok produknya dikembalikan. Order tetap tersimpan untuk histori, tapi tidak dihitung dalam ringkasan & Excel.</p>
+                <div class="flex gap-2">
+                    <button onclick="closeModal()" class="flex-1 py-2 rounded-lg bg-secondary hover:bg-gray-200 transition">Tidak</button>
+                    <button onclick="doCancelOrder('${id}')" class="flex-1 py-2 rounded-lg bg-red-500 text-white font-medium hover:bg-red-600 transition">Ya, Batalkan</button>
+                </div>
+            `);
+        }
+
+        async function doCancelOrder(id) {
+            await cancelOrder(id);
+            closeModal();
+            showToast('Order dibatalkan, stok dikembalikan');
+            renderMasterTracker();
+        }
+
+        function showOrderEditModal(id) {
+            const o = cache.orders.find(o => o.id === id);
+            if (!o) return;
+            showModal(`
+                <h3 class="text-lg font-semibold mb-1">Edit Order</h3>
+                <p class="text-sm text-secondary mb-4">Hanya data pembeli. Untuk ubah jumlah/produk: batalkan order ini lalu buat pesanan baru.</p>
+                <form id="orderEditForm" class="space-y-3">
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Nama</label>
+                        <input type="text" name="buyerName" required value="${(o.buyerName || '').replace(/"/g, '&quot;')}" class="w-full px-4 py-2 rounded-lg border">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Email</label>
+                        <input type="text" name="buyerEmail" value="${(o.buyerEmail || '').replace(/"/g, '&quot;')}" class="w-full px-4 py-2 rounded-lg border">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Nomor HP</label>
+                        <input type="text" name="buyerPhone" value="${(o.buyerPhone || '').replace(/"/g, '&quot;')}" class="w-full px-4 py-2 rounded-lg border">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Alamat</label>
+                        <textarea name="buyerAddress" rows="2" class="w-full px-4 py-2 rounded-lg border">${o.buyerAddress || ''}</textarea>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Catatan</label>
+                        <textarea name="buyerNotes" rows="2" class="w-full px-4 py-2 rounded-lg border">${o.buyerNotes || ''}</textarea>
+                    </div>
+                    <div class="flex gap-2 pt-4">
+                        <button type="button" onclick="closeModal()" class="flex-1 py-2 rounded-lg bg-secondary hover:bg-gray-200 transition">Cancel</button>
+                        <button type="submit" class="flex-1 py-2 rounded-lg btn-primary text-white font-medium transition">Simpan</button>
+                    </div>
+                </form>
+            `);
+            document.getElementById('orderEditForm').addEventListener('submit', e => {
+                e.preventDefault();
+                const fd = new FormData(e.target);
+                saveOrderEdit(id, {
+                    buyerName: (fd.get('buyerName') || '').trim(),
+                    buyerEmail: (fd.get('buyerEmail') || '').trim(),
+                    buyerPhone: (fd.get('buyerPhone') || '').trim(),
+                    buyerAddress: (fd.get('buyerAddress') || '').trim(),
+                    buyerNotes: (fd.get('buyerNotes') || '').trim()
+                });
+                closeModal();
+                showToast('Order diperbarui');
+                renderMasterTracker();
+            });
         }
 
         function toggleDetails(btn) {
@@ -1715,7 +1919,7 @@
         // Builds flat row-per-SKU rows: one row per product per order (analytics-ready)
         function buildSkuRows(orders, campaigns) {
             const rows = [];
-            orders.forEach(o => {
+            orders.filter(o => !o.cancelled).forEach(o => {
                 const c = campaigns.find(c => c.id === o.campaignId);
                 (o.items || []).forEach(i => {
                     rows.push([
