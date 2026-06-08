@@ -226,18 +226,23 @@
             if (!localStorage.getItem(KEYS.USERS)) localStorage.setItem(KEYS.USERS, '[]');
             if (!localStorage.getItem(KEYS.PRODUCTS)) localStorage.setItem(KEYS.PRODUCTS, '[]');
 
-            // First load from Firebase (wait max 8s so a bad connection never blanks the page)
+            const isBuyer = new URLSearchParams(location.search).has('campaign');
+
+            // First load from Firebase (fail-safe 8s so a bad connection never blanks the page)
             await Promise.race([
                 Promise.all([
                     db.ref('campaigns').once('value').then(s => { cache.campaigns = snapToArray(s); }),
-                    db.ref('orders').once('value').then(s => { cache.orders = snapToArray(s); })
+                    isBuyer ? Promise.resolve() : db.ref('orders').once('value').then(s => { cache.orders = snapToArray(s); })
                 ]),
                 new Promise(resolve => setTimeout(resolve, 8000))
             ]);
 
-            // Keep cache updated live whenever anyone changes the shared data
-            db.ref('campaigns').on('value', s => { cache.campaigns = snapToArray(s); });
-            db.ref('orders').on('value', s => { cache.orders = snapToArray(s); });
+            // Live listeners ONLY for the salesperson dashboard. Buyers stay once-only
+            // (no persistent connection) to conserve the Spark 100-connection limit.
+            if (!isBuyer) {
+                db.ref('campaigns').on('value', s => { cache.campaigns = snapToArray(s); });
+                db.ref('orders').on('value', s => { cache.orders = snapToArray(s); });
+            }
         }
 
         function getData(key) {
@@ -975,17 +980,34 @@
                             </div>
                             
                             <div>
+                                <label class="block text-sm font-medium mb-1">Maks total qty per order (kosongkan = tanpa batas)</label>
+                                <input type="number" name="maxPerOrder" min="1" placeholder="cth: 20" class="w-full px-4 py-2 rounded-lg border">
+                            </div>
+                            
+                            <div>
                                 <label class="block text-sm font-medium mb-3">Select Products</label>
                                 <div class="space-y-3 max-h-80 overflow-y-auto pr-2">
                                     ${products.map(p => `
-                                        <div class="card rounded-lg p-4 flex items-center gap-4 product-item" data-id="${p.id}">
-                                            <input type="checkbox" name="products" value="${p.id}" class="w-5 h-5 rounded" onchange="toggleProductItem(this)">
-                                            <div class="flex-1 min-w-0">
-                                                <p class="font-medium">${p.name}</p>
-                                                <p class="text-sm text-secondary">${p.unit}</p>
+                                        <div class="card rounded-lg p-4 product-item" data-id="${p.id}">
+                                            <div class="flex items-center gap-4">
+                                                <input type="checkbox" name="products" value="${p.id}" class="w-5 h-5 rounded" onchange="toggleProductItem(this)">
+                                                <div class="flex-1 min-w-0">
+                                                    <p class="font-medium">${p.name}</p>
+                                                    <p class="text-sm text-secondary">${p.unit}</p>
+                                                </div>
+                                                <div class="w-32">
+                                                    <input type="number" name="price_${p.id}" step="0.01" min="0" value="${p.price}" placeholder="Harga" class="w-full px-3 py-1.5 rounded border text-sm text-right">
+                                                </div>
                                             </div>
-                                            <div class="w-32">
-                                                <input type="number" name="price_${p.id}" step="0.01" min="0" value="${p.price}" placeholder="Price" class="w-full px-3 py-1.5 rounded border text-sm text-right">
+                                            <div class="grid grid-cols-2 gap-3 mt-3 pl-9">
+                                                <div>
+                                                    <label class="block text-xs text-secondary mb-1">Stok (kosongkan = tanpa batas)</label>
+                                                    <input type="number" name="stock_${p.id}" min="0" placeholder="cth: 50" class="w-full px-3 py-1.5 rounded border text-sm">
+                                                </div>
+                                                <div>
+                                                    <label class="block text-xs text-secondary mb-1">Maks/orang (kosongkan = tanpa batas)</label>
+                                                    <input type="number" name="maxitem_${p.id}" min="1" placeholder="cth: 5" class="w-full px-3 py-1.5 rounded border text-sm">
+                                                </div>
                                             </div>
                                         </div>
                                     `).join('')}
@@ -1021,13 +1043,21 @@
             const products = getProducts();
             const items = selected.map(id => {
                 const p = products.find(p => p.id === id);
-                return {
+                const stockRaw = fd.get(`stock_${id}`);
+                const maxRaw = fd.get(`maxitem_${id}`);
+                const item = {
                     productId: id,
                     name: p.name,
                     unit: p.unit,
                     price: parseFloat(fd.get(`price_${id}`))
                 };
+                if (stockRaw !== '' && stockRaw !== null) item.stock = parseInt(stockRaw);
+                if (maxRaw !== '' && maxRaw !== null) item.maxPerItem = parseInt(maxRaw);
+                return item;
             });
+            
+            const maxOrderRaw = fd.get('maxPerOrder');
+            const maxPerOrder = (maxOrderRaw !== '' && maxOrderRaw !== null) ? parseInt(maxOrderRaw) : null;
             
             const startTime = new Date(fd.get('startDateTime')).toISOString();
             const endTime = new Date(fd.get('endDateTime')).toISOString();
@@ -1043,6 +1073,7 @@
                 startTime,
                 endTime,
                 deliveryDate: fd.get('deliveryDate'),
+                maxPerOrder,
                 items,
                 // Seller payment info travels with the campaign so buyers on
                 // other devices can see it (passwords are NOT included)
@@ -1122,8 +1153,24 @@
                                 <input type="text" name="buyerName" required ${locked ? 'disabled' : ''} placeholder="Enter your name" class="w-full px-4 py-2 rounded-lg border">
                             </div>
                             <div>
+                                <label class="block text-sm font-medium mb-2">Email <span class="text-secondary font-normal">(@japfa.com)</span></label>
+                                <input type="email" name="buyerEmail" required ${locked ? 'disabled' : ''} placeholder="nama@japfa.com" class="w-full px-4 py-2 rounded-lg border">
+                            </div>
+                            <div>
                                 <label class="block text-sm font-medium mb-2">Nomor HP</label>
-                                <input type="tel" name="buyerPhone" required ${locked ? 'disabled' : ''} placeholder="08xxxxxxxxxx" class="w-full px-4 py-2 rounded-lg border">
+                                <div class="flex gap-2">
+                                    <select name="countryCode" ${locked ? 'disabled' : ''} class="px-3 py-2 rounded-lg border bg-transparent">
+                                        <option value="+62" selected>🇮🇩 +62</option>
+                                        <option value="+60">🇲🇾 +60</option>
+                                        <option value="+65">🇸🇬 +65</option>
+                                        <option value="+1">🇺🇸 +1</option>
+                                        <option value="+44">🇬🇧 +44</option>
+                                        <option value="+91">🇮🇳 +91</option>
+                                        <option value="+86">🇨🇳 +86</option>
+                                    </select>
+                                    <input type="tel" name="buyerPhone" required ${locked ? 'disabled' : ''} inputmode="numeric" maxlength="18" placeholder="81234567890" class="flex-1 px-4 py-2 rounded-lg border" oninput="this.value = this.value.replace(/\\D/g, '').slice(0, 18)">
+                                </div>
+                                <p class="text-xs text-secondary mt-1">Angka saja, tanpa 0 di depan</p>
                             </div>
                             <div>
                                 <label class="block text-sm font-medium mb-2">Alamat Pengiriman</label>
@@ -1169,6 +1216,13 @@
             if (!isExpired) {
                 startBuyerTimer(campaignId, notStarted);
             }
+            
+            // Idle session: release the connection if the buyer lingers without ordering
+            if (!locked) {
+                armBuyerSession(campaignId);
+            } else if (buyerSessionTimeout) {
+                clearTimeout(buyerSessionTimeout);
+            }
         }
 
         function adjustQty(idx, delta) {
@@ -1176,22 +1230,39 @@
             input.value = Math.max(0, parseInt(input.value || 0) + delta);
         }
 
-        function handleBuyerSubmit(e) {
+        async function handleBuyerSubmit(e) {
             e.preventDefault();
             const submitBtn = e.target.querySelector('button[type="submit"]');
             if (submitBtn && submitBtn.disabled) return; // already processing
             const fd = new FormData(e.target);
             const campaignId = fd.get('campaignId');
             const buyerName = fd.get('buyerName').trim();
+            const buyerEmail = (fd.get('buyerEmail') || '').trim().toLowerCase();
+            const countryCode = fd.get('countryCode') || '+62';
+            let phoneDigits = (fd.get('buyerPhone') || '').replace(/\D/g, '').replace(/^0+/, '');
+            
+            // Soft employee gate: order only allowed for @japfa.com emails
+            if (!buyerEmail.endsWith('@japfa.com')) {
+                showToast('Pemesanan hanya untuk internal!');
+                return;
+            }
+            if (!phoneDigits) {
+                showToast('Nomor HP tidak valid');
+                return;
+            }
+            
+            const campaigns = getCampaigns();
+            const campaign = campaigns.find(c => c.id === campaignId);
+            if (!campaign) { showToast('Campaign tidak ditemukan'); return; }
             
             const items = [];
             for (const [key, val] of fd.entries()) {
                 if (key.startsWith('qty_')) {
-                    const idx = key.split('_')[1];
+                    const idx = parseInt(key.split('_')[1]);
                     const qty = parseInt(val);
                     if (qty > 0) {
                         const item = JSON.parse(fd.get(`item_${idx}`));
-                        items.push({ ...item, quantity: qty, subtotal: qty * item.price });
+                        items.push({ ...item, idx, quantity: qty, subtotal: qty * item.price });
                     }
                 }
             }
@@ -1201,23 +1272,112 @@
                 return;
             }
             
+            // Purchase limits
+            for (const it of items) {
+                if (it.maxPerItem != null && it.quantity > it.maxPerItem) {
+                    showToast(`Maksimal ${it.maxPerItem} ${it.unit} untuk ${it.name}`);
+                    return;
+                }
+            }
+            const totalQty = items.reduce((s, i) => s + i.quantity, 0);
+            if (campaign.maxPerOrder != null && totalQty > campaign.maxPerOrder) {
+                showToast(`Maksimal ${campaign.maxPerOrder} item per pemesanan`);
+                return;
+            }
+            
             // Lock the button: a double tap must not create two orders
             if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Memproses...'; }
             
+            // Reserve stock atomically (server-authoritative; safe against simultaneous buyers)
+            const reserve = await reserveStock(campaignId, items);
+            if (!reserve.ok) {
+                showToast(`Maaf, stok ${reserve.failedName} sudah habis.`);
+                if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Submit Order'; }
+                return;
+            }
+            
             const total = items.reduce((s, i) => s + i.subtotal, 0);
-            const campaigns = getCampaigns();
-            const campaign = campaigns.find(c => c.id === campaignId);
             const seller = getSellerInfo(campaign);
             
             const order = {
                 campaignId, buyerName, items, total,
-                buyerPhone: (fd.get('buyerPhone') || '').trim(),
+                buyerEmail,
+                buyerPhone: countryCode + phoneDigits,
                 buyerAddress: (fd.get('buyerAddress') || '').trim(),
                 buyerNotes: (fd.get('buyerNotes') || '').trim(),
                 paid: false, delivered: false
             };
-            saveOrder(order);
+            await saveOrderAsync(order);
+            
+            // Buyer is done: release the Firebase connection to free a slot
+            try { db.goOffline(); } catch (e) {}
+            
             showOrderConfirmation(order, seller, campaign);
+        }
+        
+        // Atomic stock reservation across multiple items, with rollback on partial failure
+        async function reserveStock(campaignId, items) {
+            const done = [];
+            for (const it of items) {
+                if (it.stock == null) continue; // untracked item = unlimited
+                const ref = db.ref(`campaigns/${campaignId}/items/${it.idx}/stock`);
+                let failed = false;
+                try {
+                    const res = await ref.transaction(cur => {
+                        if (cur == null) return cur;            // not tracked at server
+                        if (cur < it.quantity) return;          // abort: not enough
+                        return cur - it.quantity;
+                    });
+                    if (!res.committed) failed = true;
+                } catch (e) { failed = true; }
+                if (failed) {
+                    // roll back everything already reserved
+                    for (const d of done) {
+                        try { await db.ref(`campaigns/${campaignId}/items/${d.idx}/stock`).transaction(c => (c || 0) + d.quantity); } catch (e) {}
+                    }
+                    return { ok: false, failedName: it.name };
+                }
+                done.push(it);
+            }
+            return { ok: true };
+        }
+        
+        // Await the order write so we can safely release the connection afterwards
+        function saveOrderAsync(order) {
+            order.id = generateOrderId();
+            order.createdAt = new Date().toISOString();
+            cache.orders.push(order);
+            return db.ref('orders/' + order.id).set(order).catch(() => {
+                showToast('Warning: order may not have been saved. Check your connection.');
+            });
+        }
+
+        let buyerSessionTimeout = null;
+        const BUYER_SESSION_MS = 8 * 60 * 1000; // 8 minutes idle before connection is released
+
+        function armBuyerSession(campaignId) {
+            if (buyerSessionTimeout) clearTimeout(buyerSessionTimeout);
+            buyerSessionTimeout = setTimeout(() => {
+                try { db.goOffline(); } catch (e) {}
+                const main = document.getElementById('mainContent');
+                if (main) main.innerHTML = `
+                    <div class="fade-in max-w-2xl mx-auto">
+                        <div class="card rounded-xl p-8 text-center">
+                            <h2 class="text-xl font-bold mb-2">Sesi Berakhir</h2>
+                            <p class="text-secondary mb-4">Halaman tidak aktif terlalu lama, koneksi diputus untuk menghemat sumber daya. Muat ulang untuk memesan kembali.</p>
+                            <button onclick="restartBuyerOrder('${campaignId}')" class="px-6 py-3 rounded-lg btn-primary text-white font-medium transition">Muat Ulang</button>
+                        </div>
+                    </div>`;
+            }, BUYER_SESSION_MS);
+        }
+
+        async function restartBuyerOrder(campaignId) {
+            try { db.goOnline(); } catch (e) {}
+            try {
+                const snap = await db.ref('campaigns').once('value');
+                cache.campaigns = snapToArray(snap);
+            } catch (e) {}
+            renderBuyerView(campaignId);
         }
 
         function startBuyerTimer(campaignId, wasNotStarted) {
@@ -1255,6 +1415,7 @@
         }
 
         function showOrderConfirmation(order, seller, campaign) {
+            if (buyerSessionTimeout) clearTimeout(buyerSessionTimeout);
             document.getElementById('mainContent').innerHTML = `
                 <div class="fade-in max-w-xl mx-auto">
                     <div class="card rounded-xl overflow-hidden">
@@ -1323,7 +1484,9 @@
                             
                             <button onclick="window.print()" class="no-print w-full py-3 rounded-lg bg-secondary hover:bg-gray-200 font-medium transition">Print / Save as PDF</button>
                             
-                            <button onclick="renderBuyerView('${campaign.id}')" class="no-print w-full py-3 rounded-lg border-2 border-blue-500 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 font-medium transition">Buat Order Lagi</button>
+                            <button onclick="restartBuyerOrder('${campaign.id}')" class="no-print w-full py-3 rounded-lg border-2 border-blue-500 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 font-medium transition">Buat Order Lagi</button>
+                            
+                            <p class="no-print text-center text-sm text-secondary">✅ Pesananmu sudah tersimpan dengan aman. Silakan <strong>tutup halaman ini</strong>.</p>
                         </div>
                     </div>
                 </div>
@@ -1420,6 +1583,7 @@
                             <div class="hidden mt-2 p-3 bg-secondary rounded text-sm">
                                 ${o.items.map(i => `<div class="flex justify-between"><span>${i.name} x${i.quantity}</span><span>${formatCurrency(i.subtotal)}</span></div>`).join('')}
                                 <div class="mt-2 pt-2 border-t border-gray-300 dark:border-gray-600 space-y-1">
+                                    <div><span class="text-secondary">Email:</span> ${o.buyerEmail || '-'}</div>
                                     <div><span class="text-secondary">HP:</span> ${o.buyerPhone || '-'}</div>
                                     <div><span class="text-secondary">Alamat:</span> ${o.buyerAddress || '-'}</div>
                                     <div><span class="text-secondary">Catatan:</span> ${o.buyerNotes || '-'}</div>
@@ -1465,6 +1629,7 @@
                         o.id,
                         formatDate(o.createdAt),
                         o.buyerName,
+                        o.buyerEmail || '',
                         o.buyerPhone || '',
                         o.buyerAddress || '',
                         o.buyerNotes || '',
@@ -1482,8 +1647,8 @@
             return rows;
         }
 
-        const SKU_HEADER = ['Campaign', 'Order ID', 'Order Date', 'Buyer Name', 'Phone', 'Address', 'Notes', 'Product', 'Unit', 'Qty', 'Unit Price (IDR)', 'Subtotal (IDR)', 'Order Total (IDR)', 'Paid', 'Delivered'];
-        const SKU_COLS = [{ wch: 25 }, { wch: 20 }, { wch: 20 }, { wch: 20 }, { wch: 15 }, { wch: 35 }, { wch: 25 }, { wch: 25 }, { wch: 10 }, { wch: 6 }, { wch: 15 }, { wch: 15 }, { wch: 16 }, { wch: 6 }, { wch: 10 }];
+        const SKU_HEADER = ['Campaign', 'Order ID', 'Order Date', 'Buyer Name', 'Email', 'Phone', 'Address', 'Notes', 'Product', 'Unit', 'Qty', 'Unit Price (IDR)', 'Subtotal (IDR)', 'Order Total (IDR)', 'Paid', 'Delivered'];
+        const SKU_COLS = [{ wch: 25 }, { wch: 20 }, { wch: 20 }, { wch: 20 }, { wch: 25 }, { wch: 15 }, { wch: 35 }, { wch: 25 }, { wch: 25 }, { wch: 10 }, { wch: 6 }, { wch: 15 }, { wch: 15 }, { wch: 16 }, { wch: 6 }, { wch: 10 }];
 
         function exportExcel(campaignId) {
             const campaigns = getCampaigns();
