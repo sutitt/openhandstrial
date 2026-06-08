@@ -226,23 +226,32 @@
             if (!localStorage.getItem(KEYS.USERS)) localStorage.setItem(KEYS.USERS, '[]');
             if (!localStorage.getItem(KEYS.PRODUCTS)) localStorage.setItem(KEYS.PRODUCTS, '[]');
 
-            const isBuyer = new URLSearchParams(location.search).has('campaign');
+            const params = new URLSearchParams(location.search);
+            const isBuyer = params.has('campaign');
 
-            // First load from Firebase (fail-safe 8s so a bad connection never blanks the page)
+            if (isBuyer) {
+                // Buyer needs ONLY their own campaign (not all) — much lighter, esp. with photos.
+                const cid = params.get('campaign');
+                await Promise.race([
+                    db.ref('campaigns/' + cid).once('value').then(s => {
+                        const c = s.val();
+                        cache.campaigns = c ? [c] : [];
+                    }).catch(() => { cache.campaigns = []; }),
+                    new Promise(resolve => setTimeout(resolve, 8000))
+                ]);
+                return; // no orders load, no persistent listeners (conserve connections)
+            }
+
+            // Salesperson dashboard: load everything + keep live
             await Promise.race([
                 Promise.all([
                     db.ref('campaigns').once('value').then(s => { cache.campaigns = snapToArray(s); }),
-                    isBuyer ? Promise.resolve() : db.ref('orders').once('value').then(s => { cache.orders = snapToArray(s); })
+                    db.ref('orders').once('value').then(s => { cache.orders = snapToArray(s); })
                 ]),
                 new Promise(resolve => setTimeout(resolve, 8000))
             ]);
-
-            // Live listeners ONLY for the salesperson dashboard. Buyers stay once-only
-            // (no persistent connection) to conserve the Spark 100-connection limit.
-            if (!isBuyer) {
-                db.ref('campaigns').on('value', s => { cache.campaigns = snapToArray(s); });
-                db.ref('orders').on('value', s => { cache.orders = snapToArray(s); });
-            }
+            db.ref('campaigns').on('value', s => { cache.campaigns = snapToArray(s); });
+            db.ref('orders').on('value', s => { cache.orders = snapToArray(s); });
         }
 
         function getData(key) {
@@ -299,6 +308,29 @@
         }
 
         // Products
+        // Compress an image file to a small base64 JPEG (~250px max, target well under 100KB)
+        function compressImage(file, maxDim = 250, quality = 0.6) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = e => {
+                    const img = new Image();
+                    img.onload = () => {
+                        let w = img.width, h = img.height;
+                        if (w >= h && w > maxDim) { h = Math.round(h * maxDim / w); w = maxDim; }
+                        else if (h > maxDim) { w = Math.round(w * maxDim / h); h = maxDim; }
+                        const canvas = document.createElement('canvas');
+                        canvas.width = w; canvas.height = h;
+                        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+                        resolve(canvas.toDataURL('image/jpeg', quality));
+                    };
+                    img.onerror = reject;
+                    img.src = e.target.result;
+                };
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+        }
+
         function getProducts() { return getData(KEYS.PRODUCTS); }
         function getUserProducts(username) { return getProducts().filter(p => p.username === username); }
         function saveProduct(product) {
@@ -748,13 +780,19 @@
                         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                             ${products.map(p => `
                                 <div class="card rounded-xl p-4 product-card transition">
+                                    ${p.photo ? `<img src="${p.photo}" alt="${p.name}" class="w-full h-32 object-cover rounded-lg mb-3">` : ''}
                                     <div class="flex justify-between items-start mb-3">
                                         <h3 class="font-semibold">${p.name}</h3>
-                                        <button onclick="confirmDeleteProduct('${p.id}')" class="text-red-500 hover:text-red-700 p-1">
-                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
-                                            </svg>
-                                        </button>
+                                        <div class="flex gap-1">
+                                            <button onclick="editProduct('${p.id}')" class="text-blue-500 hover:text-blue-700 p-1" title="Edit">
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+                                            </button>
+                                            <button onclick="confirmDeleteProduct('${p.id}')" class="text-red-500 hover:text-red-700 p-1" title="Hapus">
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                                                </svg>
+                                            </button>
+                                        </div>
                                     </div>
                                     <div class="space-y-2 text-sm">
                                         <div class="flex justify-between">
@@ -792,6 +830,15 @@
                         <label class="block text-sm font-medium mb-1">Default Price (IDR)</label>
                         <input type="number" name="price" required step="0.01" min="0" value="${product?.price || ''}" class="w-full px-4 py-2 rounded-lg border">
                     </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Foto Produk <span class="text-secondary font-normal">(opsional)</span></label>
+                        <input type="file" accept="image/*" onchange="handlePhotoPick(this)" class="w-full text-sm">
+                        <input type="hidden" name="photo" id="productPhotoData" value="${product?.photo || ''}">
+                        <div class="mt-2 ${product?.photo ? '' : 'hidden'}" id="photoPreviewWrap">
+                            <img id="productPhotoPreview" src="${product?.photo || ''}" class="w-24 h-24 object-cover rounded-lg border">
+                            <button type="button" onclick="clearProductPhoto()" class="text-sm text-red-500 hover:text-red-700 mt-1">Hapus foto</button>
+                        </div>
+                    </div>
                     <div class="flex gap-2 pt-4">
                         <button type="button" onclick="closeModal()" class="flex-1 py-2 rounded-lg bg-secondary hover:bg-gray-200 transition">Cancel</button>
                         <button type="submit" class="flex-1 py-2 rounded-lg btn-primary text-white font-medium transition">${isEdit ? 'Update' : 'Add'} Product</button>
@@ -799,6 +846,27 @@
                 </form>
             `);
             document.getElementById('productForm').addEventListener('submit', handleProductSubmit);
+        }
+
+        async function handlePhotoPick(input) {
+            const file = input.files && input.files[0];
+            if (!file) return;
+            try {
+                const data = await compressImage(file);
+                document.getElementById('productPhotoData').value = data;
+                document.getElementById('productPhotoPreview').src = data;
+                document.getElementById('photoPreviewWrap').classList.remove('hidden');
+            } catch (e) { showToast('Gagal memproses gambar'); }
+        }
+
+        function clearProductPhoto() {
+            document.getElementById('productPhotoData').value = '';
+            document.getElementById('photoPreviewWrap').classList.add('hidden');
+        }
+
+        function editProduct(id) {
+            const p = getUserProducts(currentUser.username).find(p => p.id === id);
+            if (p) showProductForm(p);
         }
 
         function handleProductSubmit(e) {
@@ -809,7 +877,8 @@
                 username: currentUser.username,
                 name: fd.get('name').trim(),
                 unit: fd.get('unit').trim(),
-                price: parseFloat(fd.get('price'))
+                price: parseFloat(fd.get('price')),
+                photo: fd.get('photo') || ''
             });
             closeModal();
             showToast(fd.get('id') ? 'Product updated' : 'Product added');
@@ -1049,7 +1118,8 @@
                     productId: id,
                     name: p.name,
                     unit: p.unit,
-                    price: parseFloat(fd.get(`price_${id}`))
+                    price: parseFloat(fd.get(`price_${id}`)),
+                    photo: p.photo || ''
                 };
                 if (stockRaw !== '' && stockRaw !== null) { item.stock = parseInt(stockRaw); item.stockInitial = item.stock; }
                 if (maxRaw !== '' && maxRaw !== null) item.maxPerItem = parseInt(maxRaw);
@@ -1096,9 +1166,10 @@
             
             if (!campaign) {
                 document.getElementById('mainContent').innerHTML = `
-                    <div class="text-center py-16">
-                        <h2 class="text-2xl font-bold mb-4">Campaign Not Found</h2>
-                        <p class="text-secondary">This campaign may have been deleted or the link is invalid.</p>
+                    <div class="text-center py-16 max-w-md mx-auto">
+                        <h2 class="text-2xl font-bold mb-3">Tidak Dapat Memuat Campaign</h2>
+                        <p class="text-secondary mb-6">Kemungkinan koneksi sedang ramai, link tidak valid, atau campaign sudah dihapus. Coba muat ulang sebentar lagi.</p>
+                        <button onclick="restartBuyerOrder('${campaignId}')" class="px-6 py-3 rounded-lg btn-primary text-white font-medium transition">Muat Ulang</button>
                     </div>
                 `;
                 return;
@@ -1194,6 +1265,7 @@
                                     const label = scarcityLabel(item);
                                     return `
                                     <div class="p-4 flex items-center gap-4 ${itemSoldOut ? 'opacity-60' : ''}">
+                                        ${item.photo ? `<img src="${item.photo}" alt="${item.name}" class="w-16 h-16 object-cover rounded-lg flex-shrink-0">` : ''}
                                         <div class="flex-1">
                                             <p class="font-medium">${item.name}</p>
                                             <p class="text-sm text-secondary">${item.unit} - ${formatCurrency(item.price)}</p>
