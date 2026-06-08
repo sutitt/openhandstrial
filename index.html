@@ -1188,21 +1188,28 @@
                                 <h3 class="font-semibold">Select Items</h3>
                             </div>
                             <div class="divide-y divide-gray-200 dark:divide-gray-700">
-                                ${campaign.items.map((item, idx) => `
-                                    <div class="p-4 flex items-center gap-4">
+                                ${campaign.items.map((item, idx) => {
+                                    const itemSoldOut = item.stock != null && item.stock <= 0;
+                                    const itemLocked = locked || itemSoldOut;
+                                    const label = scarcityLabel(item);
+                                    return `
+                                    <div class="p-4 flex items-center gap-4 ${itemSoldOut ? 'opacity-60' : ''}">
                                         <div class="flex-1">
                                             <p class="font-medium">${item.name}</p>
                                             <p class="text-sm text-secondary">${item.unit} - ${formatCurrency(item.price)}</p>
-                                            ${scarcityLabel(item) ? `<p class="text-sm font-semibold text-orange-600 mt-0.5">${scarcityLabel(item)}</p>` : ''}
+                                            ${itemSoldOut
+                                                ? `<p class="text-base font-semibold text-red-600 mt-1">Produk sudah habis.</p>`
+                                                : (label ? `<p class="text-base font-semibold text-orange-600 mt-1">${label}</p>` : '')}
                                         </div>
                                         <div class="flex items-center gap-2">
-                                            <button type="button" onclick="adjustQty(${idx}, -1)" ${locked ? 'disabled' : ''} class="w-8 h-8 rounded-full bg-secondary hover:bg-gray-300 flex items-center justify-center font-bold">−</button>
-                                            <input type="number" name="qty_${idx}" value="0" min="0" ${locked ? 'disabled' : ''} class="w-16 text-center px-2 py-1 rounded border" onchange="this.value = Math.max(0, parseInt(this.value) || 0)">
-                                            <button type="button" onclick="adjustQty(${idx}, 1)" ${locked ? 'disabled' : ''} class="w-8 h-8 rounded-full bg-secondary hover:bg-gray-300 flex items-center justify-center font-bold">+</button>
+                                            <button type="button" onclick="adjustQty(${idx}, -1)" ${itemLocked ? 'disabled' : ''} class="w-8 h-8 rounded-full bg-secondary hover:bg-gray-300 flex items-center justify-center font-bold ${itemLocked ? 'opacity-50 cursor-not-allowed' : ''}">−</button>
+                                            <input type="number" name="qty_${idx}" value="0" min="0" ${itemLocked ? 'disabled' : ''} class="w-16 text-center px-2 py-1 rounded border" onchange="this.value = Math.max(0, parseInt(this.value) || 0)">
+                                            <button type="button" onclick="adjustQty(${idx}, 1)" ${itemLocked ? 'disabled' : ''} class="w-8 h-8 rounded-full bg-secondary hover:bg-gray-300 flex items-center justify-center font-bold ${itemLocked ? 'opacity-50 cursor-not-allowed' : ''}">+</button>
                                             <input type="hidden" name="item_${idx}" value='${JSON.stringify(item).replace(/'/g, "&#39;")}'>
                                         </div>
                                     </div>
-                                `).join('')}
+                                `;
+                                }).join('')}
                             </div>
                         </div>
                         
@@ -1388,13 +1395,11 @@
             }, BUYER_SESSION_MS);
         }
 
-        async function restartBuyerOrder(campaignId) {
-            try { db.goOnline(); } catch (e) {}
-            try {
-                const snap = await db.ref('campaigns').once('value');
-                cache.campaigns = snapToArray(snap);
-            } catch (e) {}
-            renderBuyerView(campaignId);
+        function restartBuyerOrder(campaignId) {
+            // Full reload: re-establishes the connection and refetches current stock
+            // so scarcity labels reflect the latest values (avoids stale offline cache).
+            location.href = location.pathname + '?campaign=' + encodeURIComponent(campaignId);
+            location.reload();
         }
 
         function startBuyerTimer(campaignId, wasNotStarted) {
