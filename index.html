@@ -434,25 +434,28 @@
             });
         }
 
-        // Cancel an order: mark cancelled (kept for history) and refill stock for its tracked items
-        async function cancelOrder(id) {
-            const o = cache.orders.find(o => o.id === id);
-            if (!o || o.cancelled) return;
+        // Cancel selected items in an order: refill their stock, mark them cancelled,
+        // recompute the order total. If every item ends up cancelled, the whole order is cancelled.
+        async function cancelOrderItems(orderId, positions) {
+            const o = cache.orders.find(o => o.id === orderId);
+            if (!o) return;
             const c = cache.campaigns.find(c => c.id === o.campaignId);
-            if (c) {
-                for (const it of (o.items || [])) {
-                    if (it.idx == null) continue;
-                    const ci = c.items[it.idx];
-                    if (ci && ci.stock != null) {
-                        try {
-                            await db.ref(`campaigns/${o.campaignId}/items/${it.idx}/stock`).transaction(cur => (cur || 0) + it.quantity);
-                            ci.stock = (ci.stock || 0) + it.quantity;
-                        } catch (e) {}
-                    }
+            for (const pos of positions) {
+                const it = o.items[pos];
+                if (!it || it.cancelled) continue;
+                if (c && it.idx != null && c.items[it.idx] && c.items[it.idx].stock != null) {
+                    try {
+                        await db.ref(`campaigns/${o.campaignId}/items/${it.idx}/stock`).transaction(cur => (cur || 0) + it.quantity);
+                        c.items[it.idx].stock = (c.items[it.idx].stock || 0) + it.quantity;
+                    } catch (e) {}
                 }
+                it.cancelled = true;
             }
-            o.cancelled = true;
-            db.ref('orders/' + id + '/cancelled').set(true).catch(() => {});
+            o.total = o.items.filter(i => !i.cancelled).reduce((s, i) => s + i.subtotal, 0);
+            if (o.items.every(i => i.cancelled)) o.cancelled = true;
+            db.ref('orders/' + orderId + '/items').set(o.items).catch(() => {});
+            db.ref('orders/' + orderId + '/total').set(o.total).catch(() => {});
+            if (o.cancelled) db.ref('orders/' + orderId + '/cancelled').set(true).catch(() => {});
         }
 
         // Edit buyer contact fields only (quantity changes go via cancel + re-order)
@@ -1005,10 +1008,10 @@
                                 const archived = !!c.archived;
                                 const isActive = !expired && !closed && !archived;
                                 const status = archived ? { t: 'Diarsipkan', cls: 'bg-gray-200 text-gray-600' }
-                                    : closed ? { t: 'Ditutup', cls: 'bg-orange-100 text-orange-700' }
                                     : expired ? { t: 'Closed', cls: 'bg-gray-200 text-gray-600' }
+                                    : closed ? { t: 'Ditutup', cls: 'bg-orange-100 text-orange-700' }
                                     : { t: 'Active', cls: 'bg-green-100 text-green-700' };
-                                const borderCls = isActive ? 'border-l-green-500' : (closed ? 'border-l-orange-400' : 'border-l-gray-400');
+                                const borderCls = isActive ? 'border-l-green-500' : (closed && !expired ? 'border-l-orange-400' : 'border-l-gray-400');
                                 return `
                                     <div class="card rounded-xl p-6 border-l-4 ${borderCls} ${isActive ? '' : 'opacity-80'}">
                                         <div class="flex flex-wrap items-start justify-between gap-4">
@@ -1028,7 +1031,7 @@
                                                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                                                             <span class="font-mono">${tl.d > 0 ? tl.d + 'd ' : ''}${pad(tl.h)}:${pad(tl.m)}:${pad(tl.s)}</span>
                                                         </div>
-                                                    ` : closed ? `<span class="text-orange-600">Ditutup manual oleh sales</span>`
+                                                    ` : (closed && !expired) ? `<span class="text-orange-600">Ditutup manual oleh sales</span>`
                                                        : `<span class="text-red-500">Closed on ${formatDate(c.endTime)}</span>`}
                                                 </div>
                                             </div>
@@ -1038,7 +1041,6 @@
                                                 <button onclick="showStockEditModal('${c.id}')" class="px-3 py-1.5 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 text-sm font-medium transition">Edit Stok</button>
                                                 ${!archived && !expired ? `<button onclick="toggleCampaignClosed('${c.id}', ${!closed})" class="px-3 py-1.5 rounded-lg bg-orange-500/10 hover:bg-orange-500/20 text-orange-600 text-sm font-medium transition">${closed ? 'Buka Lagi' : 'Tutup'}</button>` : ''}
                                                 <button onclick="toggleCampaignArchived('${c.id}', ${!archived})" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 text-sm font-medium transition">${archived ? 'Pulihkan' : 'Arsip'}</button>
-                                                <button onclick="confirmDeleteCampaign('${c.id}')" class="px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-500 text-sm font-medium transition">Delete</button>
                                             </div>
                                         </div>
                                     </div>
@@ -1320,6 +1322,11 @@
                                 ${tl.d > 0 ? `<span class="text-2xl">${tl.d}d</span> ` : ''}${pad(tl.h)}:${pad(tl.m)}:${pad(tl.s)}
                             </div>
                         </div>
+                    ` : forceClosed ? `
+                        <div class="bg-orange-50 dark:bg-orange-900/20 border border-orange-300 dark:border-orange-700 rounded-xl p-6 mb-6 text-center">
+                            <h2 class="text-xl font-bold text-orange-600 mb-2">🔒 Pemesanan Ditutup Sementara</h2>
+                            <p class="text-secondary">Sales sedang menutup pemesanan. Silakan cek lagi nanti.</p>
+                        </div>
                     ` : `
                         <div class="card rounded-xl p-6 mb-6 text-center ${tl.d === 0 && tl.h < 1 ? 'border-2 border-red-400 timer-urgent' : ''}">
                             <p class="text-sm text-secondary mb-2">Time Remaining</p>
@@ -1410,7 +1417,7 @@
                         </div>
                         
                         <button type="submit" ${locked ? 'disabled' : ''} class="w-full py-4 rounded-xl btn-primary text-white font-semibold text-lg transition ${locked ? 'opacity-50 cursor-not-allowed' : ''}">
-                            ${forceClosed ? 'Pemesanan Ditutup' : isExpired ? 'Campaign Closed' : notStarted ? 'Belum Dibuka' : 'Submit Order'}
+                            ${isExpired ? 'Campaign Closed' : forceClosed ? 'Pemesanan Ditutup' : notStarted ? 'Belum Dibuka' : 'Submit Order'}
                         </button>
                     </form>
                 </div>
@@ -1794,15 +1801,18 @@
             return orders.map(o => {
                 const c = campaigns.find(c => c.id === o.campaignId);
                 const cancelled = !!o.cancelled;
+                const partial = !cancelled && (o.items || []).some(i => i.cancelled);
+                const badge = cancelled ? ' <span class="ml-1 px-2 py-0.5 rounded text-xs bg-red-100 text-red-700">Dibatalkan</span>'
+                    : partial ? ' <span class="ml-1 px-2 py-0.5 rounded text-xs bg-orange-100 text-orange-700">Sebagian dibatalkan</span>' : '';
                 return `
                     <tr class="hover:bg-secondary/50 ${cancelled ? 'opacity-60' : ''}">
-                        <td class="px-4 py-3 font-mono text-sm">${o.id}${cancelled ? ' <span class="ml-1 px-2 py-0.5 rounded text-xs bg-red-100 text-red-700">Dibatalkan</span>' : ''}</td>
+                        <td class="px-4 py-3 font-mono text-sm">${o.id}${badge}</td>
                         <td class="px-4 py-3">${c ? c.name : 'Unknown'}</td>
                         <td class="px-4 py-3 font-medium ${cancelled ? 'line-through' : ''}">${o.buyerName}</td>
                         <td class="px-4 py-3">
                             <button onclick="toggleDetails(this)" class="text-blue-500 hover:underline text-sm">${o.items.length} items (view)</button>
                             <div class="hidden mt-2 p-3 bg-secondary rounded text-sm">
-                                ${o.items.map(i => `<div class="flex justify-between"><span>${i.name} x${i.quantity}</span><span>${formatCurrency(i.subtotal)}</span></div>`).join('')}
+                                ${o.items.map(i => `<div class="flex justify-between ${i.cancelled ? 'line-through text-secondary' : ''}"><span>${i.name} x${i.quantity}${i.cancelled ? ' (dibatalkan)' : ''}</span><span>${formatCurrency(i.subtotal)}</span></div>`).join('')}
                                 <div class="mt-2 pt-2 border-t border-gray-300 dark:border-gray-600 space-y-1">
                                     <div><span class="text-secondary">Email:</span> ${o.buyerEmail || '-'}</div>
                                     <div><span class="text-secondary">HP:</span> ${o.buyerPhone || '-'}</div>
@@ -1839,21 +1849,33 @@
         function confirmCancelOrder(id) {
             const o = cache.orders.find(o => o.id === id);
             if (!o) return;
+            const active = o.items.map((it, pos) => ({ it, pos })).filter(x => !x.it.cancelled);
             showModal(`
-                <h3 class="text-lg font-semibold mb-2">Batalkan Order?</h3>
-                <p class="text-secondary mb-6">Order <span class="font-mono">${id}</span> akan ditandai dibatalkan dan stok produknya dikembalikan. Order tetap tersimpan untuk histori, tapi tidak dihitung dalam ringkasan & Excel.</p>
-                <div class="flex gap-2">
-                    <button onclick="closeModal()" class="flex-1 py-2 rounded-lg bg-secondary hover:bg-gray-200 transition">Tidak</button>
-                    <button onclick="doCancelOrder('${id}')" class="flex-1 py-2 rounded-lg bg-red-500 text-white font-medium hover:bg-red-600 transition">Ya, Batalkan</button>
-                </div>
+                <h3 class="text-lg font-semibold mb-2">Batalkan Order / Item</h3>
+                <p class="text-secondary text-sm mb-4">Pilih item yang dibatalkan. Stok item itu dikembalikan dan total order dihitung ulang. Centang semua = batalkan seluruh order. Item tetap tersimpan untuk histori.</p>
+                <form id="cancelItemsForm" class="space-y-2">
+                    ${active.map(x => `
+                        <label class="flex items-center gap-3 p-2 rounded-lg border cursor-pointer">
+                            <input type="checkbox" name="pos" value="${x.pos}" class="w-4 h-4">
+                            <span class="flex-1 text-sm">${x.it.name} <span class="text-secondary">x${x.it.quantity}</span></span>
+                            <span class="text-sm font-medium">${formatCurrency(x.it.subtotal)}</span>
+                        </label>
+                    `).join('')}
+                    <div class="flex gap-2 pt-4">
+                        <button type="button" onclick="closeModal()" class="flex-1 py-2 rounded-lg bg-secondary hover:bg-gray-200 transition">Batal</button>
+                        <button type="submit" class="flex-1 py-2 rounded-lg bg-red-500 text-white font-medium hover:bg-red-600 transition">Batalkan Item Terpilih</button>
+                    </div>
+                </form>
             `);
-        }
-
-        async function doCancelOrder(id) {
-            await cancelOrder(id);
-            closeModal();
-            showToast('Order dibatalkan, stok dikembalikan');
-            renderMasterTracker();
+            document.getElementById('cancelItemsForm').addEventListener('submit', async e => {
+                e.preventDefault();
+                const positions = [...e.target.querySelectorAll('input[name="pos"]:checked')].map(i => parseInt(i.value));
+                if (positions.length === 0) { showToast('Pilih minimal satu item'); return; }
+                await cancelOrderItems(id, positions);
+                closeModal();
+                showToast('Item dibatalkan, stok dikembalikan');
+                renderMasterTracker();
+            });
         }
 
         function showOrderEditModal(id) {
@@ -1921,7 +1943,7 @@
             const rows = [];
             orders.filter(o => !o.cancelled).forEach(o => {
                 const c = campaigns.find(c => c.id === o.campaignId);
-                (o.items || []).forEach(i => {
+                (o.items || []).filter(i => !i.cancelled).forEach(i => {
                     rows.push([
                         c ? c.name : 'Unknown',
                         o.id,
