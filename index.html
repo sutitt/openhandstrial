@@ -202,20 +202,30 @@
 
         // Initialize
         async function init() {
-            await initStorage();
-            initTheme();
-            restoreSession();
-            renderNavigation();
-            
-            const params = new URLSearchParams(window.location.search);
-            const campaignId = params.get('campaign');
-            
-            if (campaignId) {
-                renderBuyerView(campaignId);
-            } else if (currentUser) {
-                renderDashboard();
-            } else {
-                renderLanding();
+            try {
+                await initStorage();
+                initTheme();
+                restoreSession();
+                renderNavigation();
+                
+                const params = new URLSearchParams(window.location.search);
+                const campaignId = params.get('campaign');
+                
+                if (campaignId) {
+                    renderBuyerView(campaignId);
+                } else if (currentUser) {
+                    renderDashboard();
+                } else {
+                    renderLanding();
+                }
+            } catch (e) {
+                const main = document.getElementById('mainContent');
+                if (main) main.innerHTML = `
+                    <div class="text-center py-16 max-w-md mx-auto">
+                        <h2 class="text-2xl font-bold mb-3">Gagal Memuat</h2>
+                        <p class="text-secondary mb-6">Terjadi kendala saat memuat aplikasi (mungkin koneksi). Coba muat ulang.</p>
+                        <button onclick="location.reload()" class="px-6 py-3 rounded-lg btn-primary text-white font-medium transition">Muat Ulang</button>
+                    </div>`;
             }
         }
 
@@ -386,17 +396,10 @@
             const ymd = String(d.getFullYear()).slice(2) + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0');
             const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no 0/O/1/I/L to avoid misreading
             let rand = '';
-            for (let i = 0; i < 4; i++) rand += chars[Math.floor(Math.random() * chars.length)];
+            for (let i = 0; i < 6; i++) rand += chars[Math.floor(Math.random() * chars.length)];
             return `ORD-${ymd}-${rand}`;
         }
 
-        function saveOrder(order) {
-            order.id = generateOrderId();
-            order.createdAt = new Date().toISOString();
-            cache.orders.push(order);
-            db.ref('orders/' + order.id).set(order)
-                .catch(() => showToast('Warning: order may not have been saved. Check your connection.'));
-        }
         function updateOrderStatus(id, field, value) {
             const idx = cache.orders.findIndex(o => o.id === id);
             if (idx >= 0) {
@@ -424,7 +427,16 @@
             (c.items || []).forEach((item, idx) => {
                 if (!(idx in newStocks)) return;
                 const N = newStocks[idx];
-                if (N == null || isNaN(N)) return;
+                if (N === null) {
+                    // switch back to unlimited: remove stock tracking
+                    if (item.stock != null || item.stockInitial != null) {
+                        delete item.stock; delete item.stockInitial;
+                        db.ref(`campaigns/${campaignId}/items/${idx}/stock`).set(null).catch(() => {});
+                        db.ref(`campaigns/${campaignId}/items/${idx}/stockInitial`).set(null).catch(() => {});
+                    }
+                    return;
+                }
+                if (isNaN(N)) return;
                 const oldStock = item.stock, oldInit = item.stockInitial;
                 const sold = (oldInit != null && oldStock != null && oldInit >= oldStock) ? (oldInit - oldStock) : 0;
                 item.stock = N;
@@ -500,6 +512,25 @@
 
         function formatCurrency(n) {
             return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(n);
+        }
+
+        // Escape user-controlled text before putting it into innerHTML (prevents XSS)
+        function escapeHtml(v) {
+            return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[c]));
+        }
+
+        // Compact IDR for tight cards: 1.900 -> Rp1.900; 2.500.000 -> Rp2,5Jt; 3.2e9 -> Rp3,2M
+        function formatCompactIDR(n) {
+            n = Number(n) || 0;
+            const sign = n < 0 ? '-' : '';
+            const a = Math.abs(n);
+            const f = (x) => x.toFixed(1).replace(/\.0$/, '').replace('.', ',');
+            if (a >= 1e9) return sign + 'Rp' + f(a / 1e9) + 'M';
+            if (a >= 1e6) return sign + 'Rp' + f(a / 1e6) + 'Jt';
+            if (a >= 1e4) return sign + 'Rp' + f(a / 1e3) + 'rb';
+            return formatCurrency(n);
         }
 
         function formatDate(d) {
@@ -782,7 +813,7 @@
                                             return `
                                                 <tr class="hover:bg-secondary/50">
                                                     <td class="px-6 py-4">${c ? c.name : 'Unknown'}</td>
-                                                    <td class="px-6 py-4">${o.buyerName}</td>
+                                                    <td class="px-6 py-4">${escapeHtml(o.buyerName)}</td>
                                                     <td class="px-6 py-4">${o.items.length} items</td>
                                                     <td class="px-6 py-4 font-medium">${formatCurrency(o.total)}</td>
                                                     <td class="px-6 py-4">
@@ -841,9 +872,9 @@
                         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                             ${products.map(p => `
                                 <div class="card rounded-xl p-4 product-card transition">
-                                    ${p.photo ? `<img src="${p.photo}" alt="${p.name}" class="w-full h-32 object-cover rounded-lg mb-3">` : ''}
+                                    ${p.photo ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}" class="w-full h-32 object-cover rounded-lg mb-3">` : ''}
                                     <div class="flex justify-between items-start mb-3">
-                                        <h3 class="font-semibold">${p.name}</h3>
+                                        <h3 class="font-semibold">${escapeHtml(p.name)}</h3>
                                         <div class="flex gap-1">
                                             <button onclick="editProduct('${p.id}')" class="text-blue-500 hover:text-blue-700 p-1" title="Edit">
                                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
@@ -881,11 +912,11 @@
                     <input type="hidden" name="id" value="${product?.id || ''}">
                     <div>
                         <label class="block text-sm font-medium mb-1">Product Name</label>
-                        <input type="text" name="name" required value="${product?.name || ''}" placeholder="e.g., Premium Durian" class="w-full px-4 py-2 rounded-lg border">
+                        <input type="text" name="name" required value="${escapeHtml(product?.name || '')}" placeholder="e.g., Premium Durian" class="w-full px-4 py-2 rounded-lg border">
                     </div>
                     <div>
                         <label class="block text-sm font-medium mb-1">Unit / Package Size</label>
-                        <input type="text" name="unit" required value="${product?.unit || ''}" placeholder="e.g., 1kg, 500g, Pack of 10" class="w-full px-4 py-2 rounded-lg border">
+                        <input type="text" name="unit" required value="${escapeHtml(product?.unit || '')}" placeholder="e.g., 1kg, 500g, Pack of 10" class="w-full px-4 py-2 rounded-lg border">
                     </div>
                     <div>
                         <label class="block text-sm font-medium mb-1">Default Price (IDR)</label>
@@ -965,6 +996,8 @@
         }
 
         let campaignFilter = 'current';
+        let campaignSort = 'recent';
+        function setCampaignSort(v) { campaignSort = v; renderCampaigns(); }
         function renderCampaigns(filter) {
             if (!currentUser) { renderLanding(); return; }
             campaignFilter = filter || campaignFilter || 'current';
@@ -973,6 +1006,20 @@
                 : campaignFilter === 'all' ? true
                 : !c.archived);
             const archivedCount = all.filter(c => c.archived).length;
+
+            // sort (E2)
+            const ordersByC = {};
+            campaigns.forEach(c => {
+                const os = getCampaignOrders(c.id).filter(o => !o.cancelled);
+                ordersByC[c.id] = { count: os.length, rev: os.reduce((s, o) => s + (o.total || 0), 0) };
+            });
+            campaigns.sort((a, b) => {
+                if (campaignSort === 'name') return (a.name || '').localeCompare(b.name || '');
+                if (campaignSort === 'orders') return ordersByC[b.id].count - ordersByC[a.id].count;
+                if (campaignSort === 'revenue') return ordersByC[b.id].rev - ordersByC[a.id].rev;
+                if (campaignSort === 'ending') return new Date(a.endTime || 0) - new Date(b.endTime || 0);
+                return new Date(b.createdAt || 0) - new Date(a.createdAt || 0); // recent
+            });
             
             document.getElementById('mainContent').innerHTML = `
                 <div class="fade-in">
@@ -984,10 +1031,17 @@
                         </button>
                     </div>
 
-                    <div class="mb-4 flex gap-2 text-sm">
+                    <div class="mb-4 flex flex-wrap gap-2 items-center text-sm">
                         <button onclick="renderCampaigns('current')" class="px-3 py-1.5 rounded-lg font-medium transition ${campaignFilter === 'current' ? 'btn-primary text-white' : 'bg-secondary hover:bg-gray-200'}">Aktif & Ditutup</button>
                         <button onclick="renderCampaigns('archived')" class="px-3 py-1.5 rounded-lg font-medium transition ${campaignFilter === 'archived' ? 'btn-primary text-white' : 'bg-secondary hover:bg-gray-200'}">Diarsipkan${archivedCount ? ` (${archivedCount})` : ''}</button>
                         <button onclick="renderCampaigns('all')" class="px-3 py-1.5 rounded-lg font-medium transition ${campaignFilter === 'all' ? 'btn-primary text-white' : 'bg-secondary hover:bg-gray-200'}">Semua</button>
+                        <select onchange="setCampaignSort(this.value)" class="ml-auto px-3 py-1.5 rounded-lg border">
+                            <option value="recent" ${campaignSort === 'recent' ? 'selected' : ''}>Terbaru</option>
+                            <option value="ending" ${campaignSort === 'ending' ? 'selected' : ''}>Berakhir terdekat</option>
+                            <option value="orders" ${campaignSort === 'orders' ? 'selected' : ''}>Order terbanyak</option>
+                            <option value="revenue" ${campaignSort === 'revenue' ? 'selected' : ''}>Revenue tertinggi</option>
+                            <option value="name" ${campaignSort === 'name' ? 'selected' : ''}>Nama A–Z</option>
+                        </select>
                     </div>
                     
                     ${campaigns.length === 0 ? `
@@ -1017,7 +1071,7 @@
                                         <div class="flex flex-wrap items-start justify-between gap-4">
                                             <div class="flex-1 min-w-0">
                                                 <div class="flex items-center gap-2 mb-2">
-                                                    <h3 class="font-semibold text-lg">${c.name}</h3>
+                                                    <h3 class="font-semibold text-lg">${escapeHtml(c.name)}</h3>
                                                     <span class="px-2 py-0.5 rounded text-xs font-medium ${status.cls}">${status.t}</span>
                                                 </div>
                                                 <div class="flex flex-wrap gap-4 text-sm text-secondary">
@@ -1040,7 +1094,8 @@
                                                 <button onclick="exportExcel('${c.id}')" class="px-3 py-1.5 rounded-lg bg-green-500/10 hover:bg-green-500/20 text-green-600 text-sm font-medium transition">Export</button>
                                                 <button onclick="showStockEditModal('${c.id}')" class="px-3 py-1.5 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 text-sm font-medium transition">Edit Stok</button>
                                                 ${!archived && !expired ? `<button onclick="toggleCampaignClosed('${c.id}', ${!closed})" class="px-3 py-1.5 rounded-lg bg-orange-500/10 hover:bg-orange-500/20 text-orange-600 text-sm font-medium transition">${closed ? 'Buka Lagi' : 'Tutup'}</button>` : ''}
-                                                <button onclick="toggleCampaignArchived('${c.id}', ${!archived})" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 text-sm font-medium transition">${archived ? 'Pulihkan' : 'Arsip'}</button>
+                                                ${archived ? `<button onclick="toggleCampaignArchived('${c.id}', false)" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 text-sm font-medium transition">Pulihkan</button>`
+                                                    : (expired ? `<button onclick="toggleCampaignArchived('${c.id}', true)" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 text-sm font-medium transition">Arsip</button>` : '')}
                                             </div>
                                         </div>
                                     </div>
@@ -1068,13 +1123,13 @@
             const c = getUserCampaigns(currentUser.username).find(c => c.id === campaignId);
             if (!c) return;
             showModal(`
-                <h3 class="text-lg font-semibold mb-1">Edit Stok — ${c.name}</h3>
+                <h3 class="text-lg font-semibold mb-1">Edit Stok — ${escapeHtml(c.name)}</h3>
                 <p class="text-sm text-secondary mb-4">Kosongkan = produk tanpa batas stok. Mengisi angka pada produk tanpa batas akan mulai membatasi stoknya.</p>
                 <form id="stockEditForm" class="space-y-3">
                     ${c.items.map((item, idx) => `
                         <div class="flex items-center gap-3">
                             <div class="flex-1">
-                                <p class="font-medium text-sm">${item.name}</p>
+                                <p class="font-medium text-sm">${escapeHtml(item.name)}</p>
                                 <p class="text-xs text-secondary">${item.stock != null ? 'Sisa sekarang: ' + item.stock : 'Saat ini: tanpa batas'}</p>
                             </div>
                             <input type="number" name="stock_${idx}" min="0" value="${item.stock != null ? item.stock : ''}" placeholder="tanpa batas" class="w-28 px-3 py-1.5 rounded border text-sm">
@@ -1092,7 +1147,7 @@
                 const newStocks = {};
                 c.items.forEach((item, idx) => {
                     const raw = fd.get('stock_' + idx);
-                    if (raw !== '' && raw !== null) newStocks[idx] = parseInt(raw);
+                    newStocks[idx] = (raw === '' || raw === null) ? null : parseInt(raw);
                 });
                 saveStockEdits(campaignId, newStocks);
                 closeModal();
@@ -1170,7 +1225,7 @@
                             
                             <div>
                                 <label class="block text-sm font-medium mb-1">Delivery Date (tanggal produk dikirim ke pembeli)</label>
-                                <input type="date" name="deliveryDate" required min="${tomorrow.toISOString().split('T')[0]}" class="w-full px-4 py-2 rounded-lg border">
+                                <input type="date" name="deliveryDate" required min="${tomorrow.getFullYear()}-${String(tomorrow.getMonth()+1).padStart(2,'0')}-${String(tomorrow.getDate()).padStart(2,'0')}" class="w-full px-4 py-2 rounded-lg border">
                             </div>
                             
                             <div>
@@ -1186,7 +1241,7 @@
                                             <div class="flex items-center gap-4">
                                                 <input type="checkbox" name="products" value="${p.id}" class="w-5 h-5 rounded" onchange="toggleProductItem(this)">
                                                 <div class="flex-1 min-w-0">
-                                                    <p class="font-medium">${p.name}</p>
+                                                    <p class="font-medium">${escapeHtml(p.name)}</p>
                                                     <p class="text-sm text-secondary">${p.unit}</p>
                                                 </div>
                                                 <div class="w-32">
@@ -1337,11 +1392,11 @@
                     `}
                     
                     <div class="card rounded-xl p-6 mb-6">
-                        <h2 class="text-2xl font-bold mb-1">${campaign.name}</h2>
-                        <p class="text-secondary text-sm">Organized by ${seller?.name || 'Unknown'}</p>
+                        <h2 class="text-2xl font-bold mb-1">${escapeHtml(campaign.name)}</h2>
+                        <p class="text-secondary text-sm">Organized by ${escapeHtml(seller?.name || 'Unknown')}</p>
                         ${campaign.deliveryDate ? `
                             <div class="mt-3 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg text-sm">
-                                Produk pada promo <strong>${campaign.name}</strong> akan tersedia pada: <strong>${formatDateOnly(campaign.deliveryDate)}</strong>
+                                Produk pada promo <strong>${escapeHtml(campaign.name)}</strong> akan tersedia pada: <strong>${formatDateOnly(campaign.deliveryDate)}</strong>
                             </div>
                         ` : ''}
                     </div>
@@ -1396,9 +1451,9 @@
                                     const label = scarcityLabel(item);
                                     return `
                                     <div class="p-4 flex items-center gap-4 ${itemSoldOut ? 'opacity-60' : ''}">
-                                        ${item.photo ? `<img src="${item.photo}" alt="${item.name}" class="w-16 h-16 object-cover rounded-lg flex-shrink-0">` : ''}
+                                        ${item.photo ? `<img src="${item.photo}" alt="${escapeHtml(item.name)}" class="w-16 h-16 object-cover rounded-lg flex-shrink-0">` : ''}
                                         <div class="flex-1">
-                                            <p class="font-medium">${item.name}</p>
+                                            <p class="font-medium">${escapeHtml(item.name)}</p>
                                             <p class="text-sm text-secondary">${item.unit} - ${formatCurrency(item.price)}</p>
                                             ${itemSoldOut
                                                 ? `<p class="text-base font-semibold text-red-600 mt-1">Produk sudah habis.</p>`
@@ -1601,7 +1656,6 @@
         function restartBuyerOrder(campaignId) {
             // Full reload: re-establishes the connection and refetches current stock
             // so scarcity labels reflect the latest values (avoids stale offline cache).
-            location.href = location.pathname + '?campaign=' + encodeURIComponent(campaignId);
             location.reload();
         }
 
@@ -1641,6 +1695,7 @@
 
         function showOrderConfirmation(order, seller, campaign) {
             if (buyerSessionTimeout) clearTimeout(buyerSessionTimeout);
+            pendingShare = { order, seller, campaign };
             document.getElementById('mainContent').innerHTML = `
                 <div class="fade-in max-w-xl mx-auto">
                     <div class="card rounded-xl overflow-hidden">
@@ -1653,14 +1708,14 @@
                         
                         <div class="p-6 space-y-6">
                             <div>
-                                <p class="text-center text-lg font-bold">Bukti Pemesanan ${campaign.name}</p>
+                                <p class="text-center text-lg font-bold">Bukti Pemesanan ${escapeHtml(campaign.name)}</p>
                                 <div class="mt-4 text-left text-sm space-y-1">
-                                    <p>Diterbitkan untuk: <strong>${order.buyerName}</strong></p>
+                                    <p>Diterbitkan untuk: <strong>${escapeHtml(order.buyerName)}</strong></p>
                                     <p>Order ID: <span class="font-mono font-semibold">${order.id}</span></p>
                                 </div>
                                 ${campaign.deliveryDate ? `
                                     <div class="mt-3 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg text-sm text-left">
-                                        Produk pada promo <strong>${campaign.name}</strong> akan tersedia pada: <strong>${formatDateOnly(campaign.deliveryDate)}</strong>
+                                        Produk pada promo <strong>${escapeHtml(campaign.name)}</strong> akan tersedia pada: <strong>${formatDateOnly(campaign.deliveryDate)}</strong>
                                     </div>
                                 ` : ''}
                             </div>
@@ -1678,7 +1733,7 @@
                                     <tbody>
                                         ${order.items.map(item => `
                                             <tr>
-                                                <td class="py-1">${item.name}</td>
+                                                <td class="py-1">${escapeHtml(item.name)}</td>
                                                 <td class="py-1 text-center">${item.quantity}</td>
                                                 <td class="py-1 text-right">${formatCurrency(item.price)}</td>
                                                 <td class="py-1 text-right">${formatCurrency(item.subtotal)}</td>
@@ -1696,13 +1751,13 @@
                             <div class="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-4">
                                 <h4 class="font-semibold mb-2">Pembayaran ditransfer ke:</h4>
                                 <div class="space-y-1 text-sm">
-                                    <p><span class="text-secondary">Bank:</span> ${seller?.bankName || 'N/A'}</p>
-                                    <p><span class="text-secondary">Account:</span> ${seller?.accountNumber || 'N/A'}</p>
-                                    <p><span class="text-secondary">Name:</span> ${seller?.accountName || 'N/A'}</p>
+                                    <p><span class="text-secondary">Bank:</span> ${escapeHtml(seller?.bankName || 'N/A')}</p>
+                                    <p><span class="text-secondary">Account:</span> ${escapeHtml(seller?.accountNumber || 'N/A')}</p>
+                                    <p><span class="text-secondary">Name:</span> ${escapeHtml(seller?.accountName || 'N/A')}</p>
                                 </div>
                             </div>
                             
-                            <button onclick="shareWhatsApp('${order.id}', '${order.buyerName}', '${campaign.name}', ${order.total}, '${seller?.bankName || ''}', '${seller?.accountNumber || ''}')" class="no-print w-full py-3 rounded-lg bg-green-500 hover:bg-green-600 text-white font-medium transition flex items-center justify-center gap-2">
+                            <button onclick="shareWhatsApp()" class="no-print w-full py-3 rounded-lg bg-green-500 hover:bg-green-600 text-white font-medium transition flex items-center justify-center gap-2">
                                 <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
                                 Share to WhatsApp
                             </button>
@@ -1718,8 +1773,13 @@
             `;
         }
 
-        function shareWhatsApp(orderId, name, campaign, total, bank, account) {
-            const msg = `Halo! Saya ada pesanan pada promo ${campaign}.\nOrder ID: ${orderId}\nNama: ${name}\nTotal: ${formatCurrency(total)}\n\nPembayaran akan segera saya transfer ke rekening yang tercantum:\n${bank} - ${account}\n\nTerima kasih!`;
+        let pendingShare = null;
+        function shareWhatsApp() {
+            if (!pendingShare) return;
+            const { order, seller, campaign } = pendingShare;
+            const bank = (seller && seller.bankName) || '';
+            const account = (seller && seller.accountNumber) || '';
+            const msg = `Halo! Saya ada pesanan pada promo ${escapeHtml(campaign.name)}.\nOrder ID: ${order.id}\nNama: ${escapeHtml(order.buyerName)}\nTotal: ${formatCurrency(order.total)}\n\nPembayaran akan segera saya transfer ke rekening yang tercantum:\n${bank} - ${account}\n\nTerima kasih!`;
             window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
         }
 
@@ -1739,10 +1799,25 @@
                         </button>
                     </div>
                     
-                    <div class="mb-4">
+                    <div class="mb-4 flex flex-wrap gap-2">
                         <select id="campaignFilter" onchange="filterOrders()" class="px-4 py-2 rounded-lg border">
-                            <option value="">All Campaigns</option>
-                            ${campaigns.map(c => `<option value="${c.id}">${c.name}</option>`).join('')}
+                            <option value="">Semua Campaign</option>
+                            ${campaigns.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}
+                        </select>
+                        <select id="statusFilter" onchange="filterOrders()" class="px-4 py-2 rounded-lg border">
+                            <option value="">Semua status</option>
+                            <option value="unpaid">Belum bayar</option>
+                            <option value="paid">Sudah bayar</option>
+                            <option value="undelivered">Belum dikirim</option>
+                            <option value="delivered">Sudah dikirim</option>
+                            <option value="cancelled">Dibatalkan</option>
+                        </select>
+                        <select id="orderSort" onchange="filterOrders()" class="px-4 py-2 rounded-lg border">
+                            <option value="recent">Terbaru</option>
+                            <option value="oldest">Terlama</option>
+                            <option value="total_desc">Total tertinggi</option>
+                            <option value="total_asc">Total terendah</option>
+                            <option value="name">Nama A–Z</option>
                         </select>
                     </div>
                     
@@ -1753,7 +1828,7 @@
                         </div>
                         <div class="card rounded-xl p-4 text-center">
                             <p class="text-sm text-secondary">Total Revenue</p>
-                            <p class="text-2xl font-bold">${formatCurrency(active.reduce((s, o) => s + o.total, 0))}</p>
+                            <p class="text-2xl font-bold" title="${formatCurrency(active.reduce((s, o) => s + o.total, 0))}">${formatCompactIDR(active.reduce((s, o) => s + o.total, 0))}</p>
                         </div>
                         <div class="card rounded-xl p-4 text-center">
                             <p class="text-sm text-secondary">Paid / Unpaid</p>
@@ -1787,7 +1862,7 @@
                                         </tr>
                                     </thead>
                                     <tbody id="ordersTableBody" class="divide-y divide-gray-200 dark:divide-gray-700">
-                                        ${renderOrdersRows(orders, campaigns)}
+                                        ${renderOrdersRows(sortOrders(orders, 'recent'), campaigns)}
                                     </tbody>
                                 </table>
                             </div>
@@ -1808,16 +1883,16 @@
                     <tr class="hover:bg-secondary/50 ${cancelled ? 'opacity-60' : ''}">
                         <td class="px-4 py-3 font-mono text-sm">${o.id}${badge}</td>
                         <td class="px-4 py-3">${c ? c.name : 'Unknown'}</td>
-                        <td class="px-4 py-3 font-medium ${cancelled ? 'line-through' : ''}">${o.buyerName}</td>
+                        <td class="px-4 py-3 font-medium ${cancelled ? 'line-through' : ''}">${escapeHtml(o.buyerName)}</td>
                         <td class="px-4 py-3">
                             <button onclick="toggleDetails(this)" class="text-blue-500 hover:underline text-sm">${o.items.length} items (view)</button>
                             <div class="hidden mt-2 p-3 bg-secondary rounded text-sm">
-                                ${o.items.map(i => `<div class="flex justify-between ${i.cancelled ? 'line-through text-secondary' : ''}"><span>${i.name} x${i.quantity}${i.cancelled ? ' (dibatalkan)' : ''}</span><span>${formatCurrency(i.subtotal)}</span></div>`).join('')}
+                                ${o.items.map(i => `<div class="flex justify-between ${i.cancelled ? 'line-through text-secondary' : ''}"><span>${escapeHtml(i.name)} x${i.quantity}${i.cancelled ? ' (dibatalkan)' : ''}</span><span>${formatCurrency(i.subtotal)}</span></div>`).join('')}
                                 <div class="mt-2 pt-2 border-t border-gray-300 dark:border-gray-600 space-y-1">
-                                    <div><span class="text-secondary">Email:</span> ${o.buyerEmail || '-'}</div>
-                                    <div><span class="text-secondary">HP:</span> ${o.buyerPhone || '-'}</div>
-                                    <div><span class="text-secondary">Alamat:</span> ${o.buyerAddress || '-'}</div>
-                                    <div><span class="text-secondary">Catatan:</span> ${o.buyerNotes || '-'}</div>
+                                    <div><span class="text-secondary">Email:</span> ${escapeHtml(o.buyerEmail || '-')}</div>
+                                    <div><span class="text-secondary">HP:</span> ${escapeHtml(o.buyerPhone || '-')}</div>
+                                    <div><span class="text-secondary">Alamat:</span> ${escapeHtml(o.buyerAddress || '-')}</div>
+                                    <div><span class="text-secondary">Catatan:</span> ${escapeHtml(o.buyerNotes || '-')}</div>
                                 </div>
                             </div>
                         </td>
@@ -1857,7 +1932,7 @@
                     ${active.map(x => `
                         <label class="flex items-center gap-3 p-2 rounded-lg border cursor-pointer">
                             <input type="checkbox" name="pos" value="${x.pos}" class="w-4 h-4">
-                            <span class="flex-1 text-sm">${x.it.name} <span class="text-secondary">x${x.it.quantity}</span></span>
+                            <span class="flex-1 text-sm">${escapeHtml(x.it.name)} <span class="text-secondary">x${x.it.quantity}</span></span>
                             <span class="text-sm font-medium">${formatCurrency(x.it.subtotal)}</span>
                         </label>
                     `).join('')}
@@ -1887,23 +1962,23 @@
                 <form id="orderEditForm" class="space-y-3">
                     <div>
                         <label class="block text-sm font-medium mb-1">Nama</label>
-                        <input type="text" name="buyerName" required value="${(o.buyerName || '').replace(/"/g, '&quot;')}" class="w-full px-4 py-2 rounded-lg border">
+                        <input type="text" name="buyerName" required value="${escapeHtml(o.buyerName || '')}" class="w-full px-4 py-2 rounded-lg border">
                     </div>
                     <div>
                         <label class="block text-sm font-medium mb-1">Email</label>
-                        <input type="text" name="buyerEmail" value="${(o.buyerEmail || '').replace(/"/g, '&quot;')}" class="w-full px-4 py-2 rounded-lg border">
+                        <input type="text" name="buyerEmail" value="${escapeHtml(o.buyerEmail || '')}" class="w-full px-4 py-2 rounded-lg border">
                     </div>
                     <div>
                         <label class="block text-sm font-medium mb-1">Nomor HP</label>
-                        <input type="text" name="buyerPhone" value="${(o.buyerPhone || '').replace(/"/g, '&quot;')}" class="w-full px-4 py-2 rounded-lg border">
+                        <input type="text" name="buyerPhone" value="${escapeHtml(o.buyerPhone || '')}" class="w-full px-4 py-2 rounded-lg border">
                     </div>
                     <div>
                         <label class="block text-sm font-medium mb-1">Alamat</label>
-                        <textarea name="buyerAddress" rows="2" class="w-full px-4 py-2 rounded-lg border">${o.buyerAddress || ''}</textarea>
+                        <textarea name="buyerAddress" rows="2" class="w-full px-4 py-2 rounded-lg border">${escapeHtml(o.buyerAddress || '')}</textarea>
                     </div>
                     <div>
                         <label class="block text-sm font-medium mb-1">Catatan</label>
-                        <textarea name="buyerNotes" rows="2" class="w-full px-4 py-2 rounded-lg border">${o.buyerNotes || ''}</textarea>
+                        <textarea name="buyerNotes" rows="2" class="w-full px-4 py-2 rounded-lg border">${escapeHtml(o.buyerNotes || '')}</textarea>
                     </div>
                     <div class="flex gap-2 pt-4">
                         <button type="button" onclick="closeModal()" class="flex-1 py-2 rounded-lg bg-secondary hover:bg-gray-200 transition">Cancel</button>
@@ -1931,10 +2006,29 @@
             btn.nextElementSibling.classList.toggle('hidden');
         }
 
+        function sortOrders(orders, sort) {
+            const a = [...orders];
+            if (sort === 'oldest') a.sort((x, y) => new Date(x.createdAt) - new Date(y.createdAt));
+            else if (sort === 'total_desc') a.sort((x, y) => (y.total || 0) - (x.total || 0));
+            else if (sort === 'total_asc') a.sort((x, y) => (x.total || 0) - (y.total || 0));
+            else if (sort === 'name') a.sort((x, y) => (x.buyerName || '').localeCompare(y.buyerName || ''));
+            else a.sort((x, y) => new Date(y.createdAt) - new Date(x.createdAt)); // recent
+            return a;
+        }
+
         function filterOrders() {
-            const campaignId = document.getElementById('campaignFilter').value;
             const campaigns = getUserCampaigns(currentUser.username);
-            const orders = campaignId ? getUserOrders(currentUser.username).filter(o => o.campaignId === campaignId) : getUserOrders(currentUser.username);
+            let orders = getUserOrders(currentUser.username);
+            const cid = (document.getElementById('campaignFilter') || {}).value || '';
+            const status = (document.getElementById('statusFilter') || {}).value || '';
+            const sort = (document.getElementById('orderSort') || {}).value || 'recent';
+            if (cid) orders = orders.filter(o => o.campaignId === cid);
+            if (status === 'unpaid') orders = orders.filter(o => !o.cancelled && !o.paid);
+            else if (status === 'paid') orders = orders.filter(o => !o.cancelled && o.paid);
+            else if (status === 'undelivered') orders = orders.filter(o => !o.cancelled && !o.delivered);
+            else if (status === 'delivered') orders = orders.filter(o => !o.cancelled && o.delivered);
+            else if (status === 'cancelled') orders = orders.filter(o => o.cancelled);
+            orders = sortOrders(orders, sort);
             document.getElementById('ordersTableBody').innerHTML = renderOrdersRows(orders, campaigns);
         }
 
