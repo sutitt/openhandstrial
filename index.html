@@ -163,6 +163,7 @@
     <!-- Firebase SDK (compat build, works with classic scripts) -->
     <script src="https://www.gstatic.com/firebasejs/12.14.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/12.14.0/firebase-database-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/12.14.0/firebase-auth-compat.js"></script>
     <script>
         // Firebase configuration (connection address for this app's shared database)
         const firebaseConfig = {
@@ -176,6 +177,7 @@
         };
         firebase.initializeApp(firebaseConfig);
         const db = firebase.database();
+        const auth = firebase.auth();
     </script>
 
     <script>
@@ -190,7 +192,10 @@
         };
 
         // State
-        let currentUser = null;
+        let currentUser = null;          // { userId, name, role, bankName, accountNumber, accountName }
+        const SALES_EMAIL_DOMAIN = '@oph.local'; // synthetic email; never receives real mail
+        const userIdToEmail = (uid) => uid + SALES_EMAIL_DOMAIN;
+        const emailToUserId = (email) => (email || '').split('@')[0];
 
         // Shared data cache (mirrors Firebase; refreshed live by listeners below)
         const cache = { campaigns: [], orders: [] };
@@ -203,21 +208,47 @@
         // Initialize
         async function init() {
             try {
-                await initStorage();
                 initTheme();
-                restoreSession();
-                renderNavigation();
-                
                 const params = new URLSearchParams(window.location.search);
                 const campaignId = params.get('campaign');
-                
+
                 if (campaignId) {
+                    // Buyer view: no login needed; load only this campaign.
+                    await loadBuyerCampaign(campaignId);
+                    renderNavigation();
                     renderBuyerView(campaignId);
-                } else if (currentUser) {
-                    renderDashboard();
-                } else {
-                    renderLanding();
+                    return;
                 }
+
+                // Sales/admin app: login state is driven by Firebase Auth (persists across reloads).
+                auth.onAuthStateChanged(async (authUser) => {
+                    try {
+                        if (authUser && !authUser.isAnonymous) {
+                            const userId = emailToUserId(authUser.email);
+                            const snap = await db.ref('users/' + userId).once('value');
+                            const profile = snap.val();
+                            if (!profile) {
+                                // Authenticated but not provisioned as sales/admin -> reject.
+                                currentUser = null;
+                                await auth.signOut();
+                                renderNavigation();
+                                renderLogin('Akun ini belum terdaftar sebagai sales. Hubungi admin.');
+                                return;
+                            }
+                            currentUser = Object.assign({ userId }, profile);
+                            await loadSalesData();
+                            renderNavigation();
+                            renderDashboard();
+                        } else {
+                            currentUser = null;
+                            renderNavigation();
+                            renderLogin();
+                        }
+                    } catch (e) {
+                        renderNavigation();
+                        renderLogin('Gagal memuat sesi. Coba muat ulang.');
+                    }
+                });
             } catch (e) {
                 const main = document.getElementById('mainContent');
                 if (main) main.innerHTML = `
@@ -229,30 +260,22 @@
             }
         }
 
-        // Storage Functions
-        // Users & Products stay in localStorage (this device only).
-        // Campaigns & Orders live in Firebase (shared across all devices).
-        async function initStorage() {
-            if (!localStorage.getItem(KEYS.USERS)) localStorage.setItem(KEYS.USERS, '[]');
+        // Products stay in localStorage (per device). Campaigns/Orders/Users live in Firebase.
+        // Buyer: load ONLY their campaign (light; conserves connections).
+        async function loadBuyerCampaign(cid) {
             if (!localStorage.getItem(KEYS.PRODUCTS)) localStorage.setItem(KEYS.PRODUCTS, '[]');
+            await Promise.race([
+                db.ref('campaigns/' + cid).once('value').then(s => {
+                    const c = s.val();
+                    cache.campaigns = c ? [c] : [];
+                }).catch(() => { cache.campaigns = []; }),
+                new Promise(resolve => setTimeout(resolve, 8000))
+            ]);
+        }
 
-            const params = new URLSearchParams(location.search);
-            const isBuyer = params.has('campaign');
-
-            if (isBuyer) {
-                // Buyer needs ONLY their own campaign (not all) — much lighter, esp. with photos.
-                const cid = params.get('campaign');
-                await Promise.race([
-                    db.ref('campaigns/' + cid).once('value').then(s => {
-                        const c = s.val();
-                        cache.campaigns = c ? [c] : [];
-                    }).catch(() => { cache.campaigns = []; }),
-                    new Promise(resolve => setTimeout(resolve, 8000))
-                ]);
-                return; // no orders load, no persistent listeners (conserve connections)
-            }
-
-            // Salesperson dashboard: load everything + keep live
+        // Sales/admin: load everything + keep live.
+        async function loadSalesData() {
+            if (!localStorage.getItem(KEYS.PRODUCTS)) localStorage.setItem(KEYS.PRODUCTS, '[]');
             await Promise.race([
                 Promise.all([
                     db.ref('campaigns').once('value').then(s => { cache.campaigns = snapToArray(s); }),
@@ -265,56 +288,34 @@
         }
 
         function getData(key) {
-            try {
-                return JSON.parse(localStorage.getItem(key) || '[]');
-            } catch (e) {
-                return [];
-            }
+            try { return JSON.parse(localStorage.getItem(key) || '[]'); } catch (e) { return []; }
         }
+        function setData(key, data) { localStorage.setItem(key, JSON.stringify(data)); }
 
-        function setData(key, data) {
-            localStorage.setItem(key, JSON.stringify(data));
-        }
-
-        // Auth Functions
-        function restoreSession() {
-            const session = localStorage.getItem(KEYS.SESSION);
-            if (session) {
-                try {
-                    const { username, password } = JSON.parse(session);
-                    const users = getData(KEYS.USERS);
-                    const user = users.find(u => u.username === username && u.password === password);
-                    if (user) currentUser = user;
-                } catch (e) {}
-            }
-        }
-
-        function login(username, password) {
-            const users = getData(KEYS.USERS);
-            const user = users.find(u => u.username === username && u.password === password);
-            if (user) {
-                currentUser = user;
-                localStorage.setItem(KEYS.SESSION, JSON.stringify({ username, password }));
-                return true;
-            }
-            return false;
+        // Auth (Firebase Auth; login by User ID via synthetic email; passwords hashed by Firebase)
+        async function doLogin(userId, password) {
+            await auth.signInWithEmailAndPassword(userIdToEmail(userId), password);
+            // onAuthStateChanged builds currentUser + renders.
         }
 
         function logout() {
-            currentUser = null;
-            localStorage.removeItem(KEYS.SESSION);
-            renderNavigation();
-            renderLanding();
+            auth.signOut().catch(() => {});
+            // onAuthStateChanged -> renderLogin
         }
 
-        // Users
-        function getUsers() { return getData(KEYS.USERS); }
-        function saveUser(user) {
-            const users = getUsers();
-            const idx = users.findIndex(u => u.username === user.username);
-            if (idx >= 0) users[idx] = user;
-            else users.push(user);
-            setData(KEYS.USERS, users);
+        function isAdmin() { return !!currentUser && currentUser.role === 'admin'; }
+
+        // Create a sales/admin account WITHOUT disturbing the admin's session,
+        // using a secondary Firebase app instance just for account creation.
+        async function createSalesAccount({ userId, password, name, bankName, accountNumber, accountName, role }) {
+            const secondary = firebase.apps.find(a => a.name === 'secondary')
+                || firebase.initializeApp(firebaseConfig, 'secondary');
+            await secondary.auth().createUserWithEmailAndPassword(userIdToEmail(userId), password);
+            try { await secondary.auth().signOut(); } catch (e) {}
+            await db.ref('users/' + userId).set({
+                userId: userId, name: name, role: role || 'sales',
+                bankName: bankName || '', accountNumber: accountNumber || '', accountName: accountName || ''
+            });
         }
 
         // Products
@@ -342,7 +343,7 @@
         }
 
         function getProducts() { return getData(KEYS.PRODUCTS); }
-        function getUserProducts(username) { return getProducts().filter(p => p.username === username); }
+        function getUserProducts(userId) { return getProducts().filter(p => p.ownerId === userId); }
         function saveProduct(product) {
             const products = getProducts();
             if (product.id) {
@@ -354,14 +355,14 @@
             }
             setData(KEYS.PRODUCTS, products);
         }
-        function deleteProduct(id, username) {
-            const products = getProducts().filter(p => !(p.id === id && p.username === username));
+        function deleteProduct(id, userId) {
+            const products = getProducts().filter(p => !(p.id === id && p.ownerId === userId));
             setData(KEYS.PRODUCTS, products);
         }
 
         // Campaigns (shared via Firebase)
         function getCampaigns() { return cache.campaigns; }
-        function getUserCampaigns(username) { return getCampaigns().filter(c => c.username === username); }
+        function getUserCampaigns(userId) { return getCampaigns().filter(c => c.ownerId === userId); }
         function saveCampaign(campaign) {
             if (!campaign.id) {
                 campaign.id = Date.now().toString();
@@ -374,8 +375,8 @@
             db.ref('campaigns/' + campaign.id).set(campaign)
                 .catch(() => showToast('Warning: failed to sync campaign. Check your connection.'));
         }
-        function deleteCampaign(id, username) {
-            const target = cache.campaigns.find(c => c.id === id && c.username === username);
+        function deleteCampaign(id, userId) {
+            const target = cache.campaigns.find(c => c.id === id && c.ownerId === userId);
             if (!target) return;
             cache.campaigns = cache.campaigns.filter(c => c.id !== id);
             db.ref('campaigns/' + id).remove()
@@ -385,11 +386,8 @@
         // Orders (shared via Firebase)
         function getOrders() { return cache.orders; }
         function getCampaignOrders(campaignId) { return getOrders().filter(o => o.campaignId === campaignId); }
-        function getUserOrders(username) {
-            return getOrders().filter(o => {
-                const c = getCampaigns().find(c => c.id === o.campaignId);
-                return c && c.username === username;
-            });
+        function getUserOrders(userId) {
+            return getOrders().filter(o => o.ownerId === userId);
         }
         function generateOrderId() {
             const d = new Date();
@@ -412,7 +410,7 @@
         // --- Batch E1: management helpers ---
         // Set a flag (archived / closed) on a campaign the current user owns
         function setCampaignFlag(id, field, value) {
-            const c = cache.campaigns.find(c => c.id === id && c.username === currentUser.username);
+            const c = cache.campaigns.find(c => c.id === id && c.ownerId === currentUser.userId);
             if (!c) return;
             c[field] = value;
             db.ref('campaigns/' + id + '/' + field).set(value)
@@ -422,7 +420,7 @@
         // Edit remaining stock live. Baseline (stockInitial) follows the new stock so the
         // scarcity label stays sensible: units already sold stay fixed, new remaining = new baseline.
         function saveStockEdits(campaignId, newStocks) {
-            const c = cache.campaigns.find(c => c.id === campaignId && c.username === currentUser.username);
+            const c = cache.campaigns.find(c => c.id === campaignId && c.ownerId === currentUser.userId);
             if (!c) return;
             (c.items || []).forEach((item, idx) => {
                 if (!(idx in newStocks)) return;
@@ -490,7 +488,7 @@
                     accountName: campaign.sellerAccountName
                 };
             }
-            return getUsers().find(u => u.username === campaign.username) || null;
+            return null;
         }
 
         // UI Helpers
@@ -603,169 +601,174 @@
                     <button onclick="renderDashboard()" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 dark:hover:bg-gray-700 text-sm font-medium transition">Dashboard</button>
                     <button onclick="renderCatalog()" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 dark:hover:bg-gray-700 text-sm font-medium transition">Products</button>
                     <button onclick="renderCampaigns()" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 dark:hover:bg-gray-700 text-sm font-medium transition">Campaigns</button>
+                    ${isAdmin() ? `<button onclick="renderAddSales()" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 dark:hover:bg-gray-700 text-sm font-medium transition">Tambah Sales</button>` : ''}
+                    <button onclick="renderChangePassword()" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 dark:hover:bg-gray-700 text-sm font-medium transition">Ganti Password</button>
                     <button onclick="logout()" class="px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-500 text-sm font-medium transition">Logout</button>
                 `;
             } else {
                 nav.innerHTML = `
-                    <button onclick="renderLogin()" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 dark:hover:bg-gray-700 text-sm font-medium transition">Login</button>
-                    <button onclick="renderRegister()" class="px-3 py-1.5 rounded-lg btn-primary text-white text-sm font-medium transition">Register</button>
+                    <button onclick="renderLogin()" class="px-3 py-1.5 rounded-lg btn-primary text-white text-sm font-medium transition">Login</button>
                 `;
             }
         }
 
         // Pages
-        function renderLanding() {
-            document.getElementById('mainContent').innerHTML = `
-                <div class="text-center py-16 fade-in">
-                    <h2 class="text-4xl font-bold mb-4">Welcome to Office Pre-Order Hub</h2>
-                    <p class="text-xl text-secondary mb-8 max-w-2xl mx-auto">Streamline your office group buying with easy campaign creation, timer-based ordering, and Excel export.</p>
-                    
-                    <div class="flex flex-wrap justify-center gap-6 mb-12">
-                        <div class="card rounded-xl p-6 w-64">
-                            <div class="w-12 h-12 bg-blue-100 dark:bg-blue-900 rounded-lg flex items-center justify-center mx-auto mb-4">
-                                <svg class="w-6 h-6 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                                </svg>
-                            </div>
-                            <h3 class="font-semibold mb-2">Timer-Based Campaigns</h3>
-                            <p class="text-sm text-secondary">Set countdown timers for limited-time offers</p>
-                        </div>
-                        <div class="card rounded-xl p-6 w-64">
-                            <div class="w-12 h-12 bg-green-100 dark:bg-green-900 rounded-lg flex items-center justify-center mx-auto mb-4">
-                                <svg class="w-6 h-6 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"></path>
-                                </svg>
-                            </div>
-                            <h3 class="font-semibold mb-2">No Login for Buyers</h3>
-                            <p class="text-sm text-secondary">Customers order instantly without registration</p>
-                        </div>
-                        <div class="card rounded-xl p-6 w-64">
-                            <div class="w-12 h-12 bg-purple-100 dark:bg-purple-900 rounded-lg flex items-center justify-center mx-auto mb-4">
-                                <svg class="w-6 h-6 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                                </svg>
-                            </div>
-                            <h3 class="font-semibold mb-2">Excel Export</h3>
-                            <p class="text-sm text-secondary">Download reports with one click</p>
-                        </div>
-                    </div>
-                    
-                    <div class="flex flex-wrap justify-center gap-4">
-                        <button onclick="renderRegister()" class="px-6 py-3 rounded-lg btn-primary text-white font-medium text-lg transition">Get Started</button>
-                        <button onclick="renderLogin()" class="px-6 py-3 rounded-lg bg-secondary hover:bg-gray-200 dark:hover:bg-gray-700 font-medium text-lg transition">I Have an Account</button>
-                    </div>
-                </div>
-            `;
-        }
+        function renderLanding() { renderLogin(); }
 
-        function renderRegister() {
-            document.getElementById('mainContent').innerHTML = `
-                <div class="max-w-md mx-auto card rounded-xl p-8 fade-in">
-                    <h2 class="text-2xl font-bold mb-6 text-center">Salesperson Registration</h2>
-                    <form id="regForm" class="space-y-4">
-                        <div>
-                            <label class="block text-sm font-medium mb-1">Your Name</label>
-                            <input type="text" name="name" required placeholder="John Doe" class="w-full px-4 py-2 rounded-lg border">
-                        </div>
-                        <div>
-                            <label class="block text-sm font-medium mb-1">Username</label>
-                            <input type="text" name="username" required placeholder="johndoe" class="w-full px-4 py-2 rounded-lg border">
-                        </div>
-                        <div>
-                            <label class="block text-sm font-medium mb-1">Password</label>
-                            <input type="password" name="password" required placeholder="••••••••" class="w-full px-4 py-2 rounded-lg border">
-                        </div>
-                        <hr class="border-custom my-4">
-                        <h3 class="font-semibold">Bank Transfer Details</h3>
-                        <p class="text-sm text-secondary mb-4">These will be shown to buyers on invoices</p>
-                        <div>
-                            <label class="block text-sm font-medium mb-1">Bank Name</label>
-                            <input type="text" name="bankName" required placeholder="Maybank" class="w-full px-4 py-2 rounded-lg border">
-                        </div>
-                        <div>
-                            <label class="block text-sm font-medium mb-1">Account Number</label>
-                            <input type="text" name="accountNumber" required placeholder="1234567890" class="w-full px-4 py-2 rounded-lg border">
-                        </div>
-                        <div>
-                            <label class="block text-sm font-medium mb-1">Account Name</label>
-                            <input type="text" name="accountName" required placeholder="John Doe" class="w-full px-4 py-2 rounded-lg border">
-                        </div>
-                        <button type="submit" class="w-full py-3 rounded-lg btn-primary text-white font-medium transition">Create Account</button>
-                    </form>
-                    <p class="text-center mt-4 text-secondary">
-                        Already have an account? <button onclick="renderLogin()" class="text-blue-500 hover:underline">Login</button>
-                    </p>
-                </div>
-            `;
-            document.getElementById('regForm').addEventListener('submit', handleRegister);
-        }
-
-        function handleRegister(e) {
-            e.preventDefault();
-            const fd = new FormData(e.target);
-            const username = fd.get('username').trim();
-            
-            if (getUsers().find(u => u.username === username)) {
-                showToast('Username already exists');
-                return;
-            }
-            
-            const user = {
-                name: fd.get('name').trim(),
-                username: username,
-                password: fd.get('password'),
-                bankName: fd.get('bankName').trim(),
-                accountNumber: fd.get('accountNumber').trim(),
-                accountName: fd.get('accountName').trim()
-            };
-            
-            saveUser(user);
-            login(username, user.password);
-            showToast('Account created successfully!');
-            renderNavigation();
-            renderDashboard();
-        }
-
-        function renderLogin() {
+        function renderLogin(msg) {
             document.getElementById('mainContent').innerHTML = `
                 <div class="max-w-md mx-auto card rounded-xl p-8 fade-in">
                     <h2 class="text-2xl font-bold mb-6 text-center">Login</h2>
+                    ${msg ? `<p class="text-sm text-center mb-4 text-red-500">${escapeHtml(msg)}</p>` : ''}
                     <form id="loginForm" class="space-y-4">
                         <div>
-                            <label class="block text-sm font-medium mb-1">Username</label>
-                            <input type="text" name="username" required placeholder="Enter your username" class="w-full px-4 py-2 rounded-lg border">
+                            <label class="block text-sm font-medium mb-1">User ID</label>
+                            <input type="text" name="userId" required autocomplete="username" placeholder="mis. budi" class="w-full px-4 py-2 rounded-lg border">
                         </div>
                         <div>
                             <label class="block text-sm font-medium mb-1">Password</label>
-                            <input type="password" name="password" required placeholder="Enter your password" class="w-full px-4 py-2 rounded-lg border">
+                            <input type="password" name="password" required autocomplete="current-password" placeholder="••••••••" class="w-full px-4 py-2 rounded-lg border">
                         </div>
                         <button type="submit" class="w-full py-3 rounded-lg btn-primary text-white font-medium transition">Login</button>
                     </form>
-                    <p class="text-center mt-4 text-secondary">
-                        Don't have an account? <button onclick="renderRegister()" class="text-blue-500 hover:underline">Register</button>
-                    </p>
+                    <p class="text-center mt-4 text-secondary text-sm">Belum punya akun? Hubungi admin untuk dibuatkan.</p>
                 </div>
             `;
             document.getElementById('loginForm').addEventListener('submit', handleLogin);
         }
 
-        function handleLogin(e) {
+        async function handleLogin(e) {
             e.preventDefault();
             const fd = new FormData(e.target);
-            if (login(fd.get('username').trim(), fd.get('password'))) {
-                showToast('Login successful!');
-                renderNavigation();
+            const userId = (fd.get('userId') || '').trim().toLowerCase();
+            const password = fd.get('password') || '';
+            const btn = e.target.querySelector('button[type="submit"]');
+            if (btn) { btn.disabled = true; btn.textContent = 'Memproses...'; }
+            try {
+                await doLogin(userId, password);
+                // success -> onAuthStateChanged renders dashboard
+            } catch (err) {
+                if (btn) { btn.disabled = false; btn.textContent = 'Login'; }
+                showToast('User ID atau password salah');
+            }
+        }
+
+        // --- Admin: Tambah Sales ---
+        function renderAddSales() {
+            if (!isAdmin()) { renderDashboard(); return; }
+            document.getElementById('mainContent').innerHTML = `
+                <div class="max-w-md mx-auto card rounded-xl p-8 fade-in">
+                    <h2 class="text-2xl font-bold mb-2 text-center">Tambah Sales</h2>
+                    <p class="text-sm text-secondary text-center mb-6">Akun login untuk salesperson baru</p>
+                    <form id="addSalesForm" class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium mb-1">User ID</label>
+                            <input type="text" name="userId" required placeholder="mis. budi" class="w-full px-4 py-2 rounded-lg border">
+                            <p class="text-xs text-secondary mt-1">Huruf kecil, tanpa spasi (a-z, 0-9, _).</p>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Password Sementara</label>
+                            <input type="text" name="password" required placeholder="min. 6 karakter" class="w-full px-4 py-2 rounded-lg border">
+                            <p class="text-xs text-secondary mt-1">Berikan ke sales via japri; sales bisa menggantinya nanti.</p>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Nama Sales</label>
+                            <input type="text" name="name" required placeholder="Budi Santoso" class="w-full px-4 py-2 rounded-lg border">
+                        </div>
+                        <hr class="border-custom my-2">
+                        <p class="text-sm text-secondary">Info rekening (ditampilkan ke pembeli; opsional)</p>
+                        <input type="text" name="bankName" placeholder="Bank (mis. BCA)" class="w-full px-4 py-2 rounded-lg border">
+                        <input type="text" name="accountNumber" placeholder="No. rekening" class="w-full px-4 py-2 rounded-lg border">
+                        <input type="text" name="accountName" placeholder="Nama pemilik rekening" class="w-full px-4 py-2 rounded-lg border">
+                        <button type="submit" class="w-full py-3 rounded-lg btn-primary text-white font-medium transition">Buat Akun Sales</button>
+                    </form>
+                </div>
+            `;
+            document.getElementById('addSalesForm').addEventListener('submit', handleAddSales);
+        }
+
+        async function handleAddSales(e) {
+            e.preventDefault();
+            if (!isAdmin()) return;
+            const fd = new FormData(e.target);
+            const userId = (fd.get('userId') || '').trim().toLowerCase();
+            const password = fd.get('password') || '';
+            const name = (fd.get('name') || '').trim();
+            if (!/^[a-z0-9_]+$/.test(userId)) { showToast('User ID hanya huruf kecil, angka, underscore'); return; }
+            if (password.length < 6) { showToast('Password minimal 6 karakter'); return; }
+            const existing = await db.ref('users/' + userId).once('value');
+            if (existing.val()) { showToast('User ID sudah dipakai'); return; }
+            const btn = e.target.querySelector('button[type="submit"]');
+            if (btn) { btn.disabled = true; btn.textContent = 'Memproses...'; }
+            try {
+                await createSalesAccount({
+                    userId, password, name,
+                    bankName: (fd.get('bankName') || '').trim(),
+                    accountNumber: (fd.get('accountNumber') || '').trim(),
+                    accountName: (fd.get('accountName') || '').trim(),
+                    role: 'sales'
+                });
+                showToast('Akun sales dibuat: ' + userId);
                 renderDashboard();
-            } else {
-                showToast('Invalid username or password');
+            } catch (err) {
+                if (btn) { btn.disabled = false; btn.textContent = 'Buat Akun Sales'; }
+                const code = err && err.code ? err.code : '';
+                if (code === 'auth/email-already-in-use') showToast('User ID sudah dipakai');
+                else if (code === 'auth/weak-password') showToast('Password terlalu lemah (min. 6)');
+                else showToast('Gagal membuat akun. Coba lagi.');
+            }
+        }
+
+        // --- Ganti Password (logged-in user) ---
+        function renderChangePassword() {
+            if (!currentUser) { renderLogin(); return; }
+            document.getElementById('mainContent').innerHTML = `
+                <div class="max-w-md mx-auto card rounded-xl p-8 fade-in">
+                    <h2 class="text-2xl font-bold mb-6 text-center">Ganti Password</h2>
+                    <form id="changePwForm" class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Password Baru</label>
+                            <input type="password" name="pw1" required autocomplete="new-password" placeholder="min. 6 karakter" class="w-full px-4 py-2 rounded-lg border">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Ulangi Password Baru</label>
+                            <input type="password" name="pw2" required autocomplete="new-password" placeholder="••••••••" class="w-full px-4 py-2 rounded-lg border">
+                        </div>
+                        <button type="submit" class="w-full py-3 rounded-lg btn-primary text-white font-medium transition">Simpan Password</button>
+                    </form>
+                </div>
+            `;
+            document.getElementById('changePwForm').addEventListener('submit', handleChangePassword);
+        }
+
+        async function handleChangePassword(e) {
+            e.preventDefault();
+            const fd = new FormData(e.target);
+            const pw1 = fd.get('pw1') || '', pw2 = fd.get('pw2') || '';
+            if (pw1.length < 6) { showToast('Password minimal 6 karakter'); return; }
+            if (pw1 !== pw2) { showToast('Password tidak sama'); return; }
+            const btn = e.target.querySelector('button[type="submit"]');
+            if (btn) { btn.disabled = true; btn.textContent = 'Menyimpan...'; }
+            try {
+                await auth.currentUser.updatePassword(pw1);
+                showToast('Password berhasil diganti');
+                renderDashboard();
+            } catch (err) {
+                if (btn) { btn.disabled = false; btn.textContent = 'Simpan Password'; }
+                if (err && err.code === 'auth/requires-recent-login') {
+                    showToast('Sesi terlalu lama. Login ulang lalu coba lagi.');
+                    logout();
+                } else {
+                    showToast('Gagal mengganti password. Coba lagi.');
+                }
             }
         }
 
         function renderDashboard() {
             if (!currentUser) { renderLanding(); return; }
             
-            const campaigns = getUserCampaigns(currentUser.username);
-            const orders = getUserOrders(currentUser.username);
+            const campaigns = getUserCampaigns(currentUser.userId);
+            const orders = getUserOrders(currentUser.userId);
             const now = new Date().getTime();
             const active = campaigns.filter(c => new Date(c.endTime).getTime() > now);
             const live = orders.filter(o => !o.cancelled);
@@ -874,7 +877,7 @@
 
         function renderCatalog() {
             if (!currentUser) { renderLanding(); return; }
-            const products = getUserProducts(currentUser.username);
+            const products = getUserProducts(currentUser.userId);
             
             document.getElementById('mainContent').innerHTML = `
                 <div class="fade-in">
@@ -983,7 +986,7 @@
         }
 
         function editProduct(id) {
-            const p = getUserProducts(currentUser.username).find(p => p.id === id);
+            const p = getUserProducts(currentUser.userId).find(p => p.id === id);
             if (p) showProductForm(p);
         }
 
@@ -992,7 +995,7 @@
             const fd = new FormData(e.target);
             saveProduct({
                 id: fd.get('id') || null,
-                username: currentUser.username,
+                ownerId: currentUser.userId,
                 name: fd.get('name').trim(),
                 unit: fd.get('unit').trim(),
                 price: parseFloat(fd.get('price')),
@@ -1015,7 +1018,7 @@
         }
 
         function doDeleteProduct(id) {
-            deleteProduct(id, currentUser.username);
+            deleteProduct(id, currentUser.userId);
             closeModal();
             showToast('Product deleted');
             renderCatalog();
@@ -1027,7 +1030,7 @@
         function renderCampaigns(filter) {
             if (!currentUser) { renderLanding(); return; }
             campaignFilter = filter || campaignFilter || 'current';
-            const all = getUserCampaigns(currentUser.username);
+            const all = getUserCampaigns(currentUser.userId);
             const campaigns = all.filter(c => campaignFilter === 'archived' ? c.archived
                 : campaignFilter === 'all' ? true
                 : !c.archived);
@@ -1146,7 +1149,7 @@
         }
 
         function showStockEditModal(campaignId) {
-            const c = getUserCampaigns(currentUser.username).find(c => c.id === campaignId);
+            const c = getUserCampaigns(currentUser.userId).find(c => c.id === campaignId);
             if (!c) return;
             showModal(`
                 <h3 class="text-lg font-semibold mb-1">Edit Stok — ${escapeHtml(c.name)}</h3>
@@ -1199,7 +1202,7 @@
         }
 
         function doDeleteCampaign(id) {
-            deleteCampaign(id, currentUser.username);
+            deleteCampaign(id, currentUser.userId);
             closeModal();
             showToast('Campaign deleted');
             renderCampaigns();
@@ -1207,7 +1210,7 @@
 
         function renderCampaignForm() {
             if (!currentUser) { renderLanding(); return; }
-            const products = getUserProducts(currentUser.username);
+            const products = getUserProducts(currentUser.userId);
             
             if (products.length === 0) {
                 showToast('Please add products to your catalog first');
@@ -1344,7 +1347,7 @@
             }
             
             saveCampaign({
-                username: currentUser.username,
+                ownerId: currentUser.userId,
                 name: fd.get('name').trim(),
                 startTime,
                 endTime,
@@ -1618,7 +1621,7 @@
             const seller = getSellerInfo(campaign);
             
             const order = {
-                campaignId, buyerName, items, total,
+                campaignId, ownerId: campaign.ownerId, buyerName, items, total,
                 buyerEmail,
                 buyerPhone: countryCode + phoneDigits,
                 buyerAddress: (fd.get('buyerAddress') || '').trim(),
@@ -1824,8 +1827,8 @@
 
         function renderMasterTracker() {
             if (!currentUser) { renderLanding(); return; }
-            const campaigns = getUserCampaigns(currentUser.username);
-            const orders = getUserOrders(currentUser.username);
+            const campaigns = getUserCampaigns(currentUser.userId);
+            const orders = getUserOrders(currentUser.userId);
             const active = orders.filter(o => !o.cancelled);
             
             document.getElementById('mainContent').innerHTML = `
@@ -2071,8 +2074,8 @@
         }
 
         function filterOrders() {
-            const campaigns = getUserCampaigns(currentUser.username);
-            let orders = getUserOrders(currentUser.username);
+            const campaigns = getUserCampaigns(currentUser.userId);
+            let orders = getUserOrders(currentUser.userId);
             const cid = (document.getElementById('campaignFilter') || {}).value || '';
             const status = (document.getElementById('statusFilter') || {}).value || '';
             const sort = (document.getElementById('orderSort') || {}).value || 'recent';
@@ -2136,8 +2139,8 @@
         }
 
         function exportAllExcel() {
-            const orders = getUserOrders(currentUser.username);
-            const campaigns = getUserCampaigns(currentUser.username);
+            const orders = getUserOrders(currentUser.userId);
+            const campaigns = getUserCampaigns(currentUser.userId);
 
             if (orders.length === 0) { showToast('No orders to export'); return; }
 
