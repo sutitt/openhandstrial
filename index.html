@@ -264,6 +264,15 @@
         // Buyer: load ONLY their campaign (light; conserves connections).
         async function loadBuyerCampaign(cid) {
             if (!localStorage.getItem(KEYS.PRODUCTS)) localStorage.setItem(KEYS.PRODUCTS, '[]');
+            // D3: buyers need an (anonymous) auth session so security rules allow them
+            // to read the campaign + create an order. Skip if already logged in (e.g. a
+            // salesperson previewing their own link keeps their session).
+            if (!auth.currentUser) {
+                await Promise.race([
+                    auth.signInAnonymously().catch(() => {}),
+                    new Promise(resolve => setTimeout(resolve, 8000))
+                ]);
+            }
             await Promise.race([
                 db.ref('campaigns/' + cid).once('value').then(s => {
                     const c = s.val();
@@ -276,15 +285,18 @@
         // Sales/admin: load everything + keep live.
         async function loadSalesData() {
             if (!localStorage.getItem(KEYS.PRODUCTS)) localStorage.setItem(KEYS.PRODUCTS, '[]');
+            // D3: orders are read owner-scoped (security rules only permit this query).
+            // Campaigns stay a full read (rules allow any authenticated user to read them).
+            const myOrders = db.ref('orders').orderByChild('ownerId').equalTo(currentUser.userId);
             await Promise.race([
                 Promise.all([
                     db.ref('campaigns').once('value').then(s => { cache.campaigns = snapToArray(s); }),
-                    db.ref('orders').once('value').then(s => { cache.orders = snapToArray(s); })
+                    myOrders.once('value').then(s => { cache.orders = snapToArray(s); })
                 ]),
                 new Promise(resolve => setTimeout(resolve, 8000))
             ]);
             db.ref('campaigns').on('value', s => { cache.campaigns = snapToArray(s); });
-            db.ref('orders').on('value', s => { cache.orders = snapToArray(s); });
+            myOrders.on('value', s => { cache.orders = snapToArray(s); });
         }
 
         function getData(key) {
