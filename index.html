@@ -1605,7 +1605,7 @@
             if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Memproses...'; }
             
             // Reserve stock atomically (server-authoritative; safe against simultaneous buyers)
-            const reserve = await reserveStock(campaignId, items);
+            const reserve = await reserveStock(campaign, items);
             if (!reserve.ok) {
                 showToast(reserve.soldOut
                     ? `Maaf, stock ${reserve.failedName} sudah habis!`
@@ -1634,10 +1634,12 @@
         }
         
         // Atomic stock reservation across multiple items, with rollback on partial failure
-        async function reserveStock(campaignId, items) {
+        async function reserveStock(campaign, items) {
+            const campaignId = campaign.id;
             const done = [];
             for (const it of items) {
-                if (it.stock == null) continue; // untracked item = unlimited
+                const ci = campaign.items[it.idx];
+                if (!ci || ci.stock == null) continue; // untracked item = unlimited (authoritative from campaign)
                 const ref = db.ref(`campaigns/${campaignId}/items/${it.idx}/stock`);
                 let failed = false, remaining = null;
                 try {
