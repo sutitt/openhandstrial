@@ -223,6 +223,8 @@
                 // Sales/admin app: login state is driven by Firebase Auth (persists across reloads).
                 auth.onAuthStateChanged(async (authUser) => {
                     try {
+                        // 4.5: ignore token-refresh events for the already-loaded user (avoid periodic re-render).
+                        if (authUser && !authUser.isAnonymous && currentUser && currentUser.userId === emailToUserId(authUser.email)) return;
                         if (authUser && !authUser.isAnonymous) {
                             const userId = emailToUserId(authUser.email);
                             const snap = await db.ref('users/' + userId).once('value');
@@ -283,10 +285,14 @@
         }
 
         // Sales/admin: load everything + keep live.
+        // 3.3: track live Firebase listeners so we can detach them on logout / re-login.
+        let liveRefs = [];
+        function attachLive(ref, fn) { ref.on('value', fn); liveRefs.push([ref, fn]); }
+        function detachLive() { liveRefs.forEach(([r, fn]) => { try { r.off('value', fn); } catch (e) {} }); liveRefs = []; }
+
         async function loadSalesData() {
+            detachLive(); // drop any listeners from a previous session before re-attaching
             if (!localStorage.getItem(KEYS.PRODUCTS)) localStorage.setItem(KEYS.PRODUCTS, '[]');
-            // D3: orders are read owner-scoped (security rules only permit this query).
-            // Campaigns stay a full read (rules allow any authenticated user to read them).
             // Admin reads ALL orders; sales reads only their own (owner-scoped, per security rules).
             const ordersRef = isAdmin() ? db.ref('orders') : db.ref('orders').orderByChild('ownerId').equalTo(currentUser.userId);
             await Promise.race([
@@ -296,8 +302,8 @@
                 ]),
                 new Promise(resolve => setTimeout(resolve, 8000))
             ]);
-            db.ref('campaigns').on('value', s => { cache.campaigns = snapToArray(s); });
-            ordersRef.on('value', s => { cache.orders = snapToArray(s); });
+            attachLive(db.ref('campaigns'), s => { cache.campaigns = snapToArray(s); });
+            attachLive(ordersRef, s => { cache.orders = snapToArray(s); });
         }
 
         function getData(key) {
@@ -312,6 +318,7 @@
         }
 
         function logout() {
+            detachLive();
             auth.signOut().catch(() => {});
             // onAuthStateChanged -> renderLogin
         }
@@ -324,11 +331,18 @@
             const secondary = firebase.apps.find(a => a.name === 'secondary')
                 || firebase.initializeApp(firebaseConfig, 'secondary');
             await secondary.auth().createUserWithEmailAndPassword(userIdToEmail(userId), password);
-            try { await secondary.auth().signOut(); } catch (e) {}
-            await db.ref('users/' + userId).set({
-                userId: userId, name: name, role: role || 'sales',
-                bankName: bankName || '', accountNumber: accountNumber || '', accountName: accountName || ''
-            });
+            try {
+                await db.ref('users/' + userId).set({
+                    userId: userId, name: name, role: role || 'sales',
+                    bankName: bankName || '', accountNumber: accountNumber || '', accountName: accountName || ''
+                });
+            } catch (e) {
+                // 4.4: profile write failed -> delete the orphaned auth user so it can't get stuck in a login loop.
+                try { await secondary.auth().currentUser?.delete(); } catch (e2) {}
+                throw e;
+            } finally {
+                try { await secondary.auth().signOut(); } catch (e) {}
+            }
         }
 
         // Products
@@ -447,11 +461,12 @@
 
         function updateOrderStatus(id, field, value) {
             const idx = cache.orders.findIndex(o => o.id === id);
-            if (idx >= 0) {
-                cache.orders[idx][field] = value;
-                db.ref('orders/' + id + '/' + field).set(value)
-                    .catch(() => showToast('Warning: status change failed to sync. Check your connection.'));
-            }
+            if (idx < 0) return;
+            // 3.2: defense-in-depth — only the owner (or an admin) may change an order.
+            if (cache.orders[idx].ownerId !== currentUser.userId && !isAdmin()) return;
+            cache.orders[idx][field] = value;
+            db.ref('orders/' + id + '/' + field).set(value)
+                .catch(() => showToast('Warning: status change failed to sync. Check your connection.'));
         }
 
         // --- Batch E1: management helpers ---
@@ -496,6 +511,7 @@
         async function cancelOrderItems(orderId, positions) {
             const o = cache.orders.find(o => o.id === orderId);
             if (!o) return;
+            if (o.ownerId !== currentUser.userId && !isAdmin()) return;
             const c = cache.campaigns.find(c => c.id === o.campaignId);
             for (const pos of positions) {
                 const it = o.items[pos];
@@ -519,6 +535,7 @@
         function saveOrderEdit(id, fields) {
             const o = cache.orders.find(o => o.id === id);
             if (!o) return;
+            if (o.ownerId !== currentUser.userId && !isAdmin()) return;
             Object.assign(o, fields);
             db.ref('orders/' + id).update(fields).catch(() => showToast('Gagal menyimpan. Cek koneksi.'));
         }
@@ -582,9 +599,9 @@
         // so a tampered stored price/total is never used. Cancelled items count 0.
         function lineSubtotal(orderItem, campaign) {
             if (!orderItem || orderItem.cancelled) return 0;
-            const ci = campaign && campaign.items && campaign.items[orderItem.idx];
-            const price = ci ? ci.price : (orderItem.price || 0); // fallback for legacy/missing
-            return price * (orderItem.quantity || 0);
+            // 4.2: use the order-time price stored on the order (authoritative since L1),
+            // NOT the campaign's current price — keeps historical revenue correct.
+            return (orderItem.price || 0) * (orderItem.quantity || 0);
         }
         function orderTrueTotal(order, campaign) {
             return (order.items || []).reduce((s, it) => s + lineSubtotal(it, campaign), 0);
@@ -594,6 +611,7 @@
         }
 
         function formatDate(d) {
+            if (!d) return '-';
             return new Date(d).toLocaleString('id-ID', {
                 day: '2-digit', month: 'short', year: 'numeric',
                 hour: '2-digit', minute: '2-digit'
@@ -890,7 +908,7 @@
                                                 <tr class="hover:bg-secondary/50">
                                                     <td class="px-6 py-4">${c ? escapeHtml(c.name) : escapeHtml(o.campaignName || 'Unknown')}</td>
                                                     <td class="px-6 py-4">${escapeHtml(o.buyerName)}</td>
-                                                    <td class="px-6 py-4">${o.items.length} items</td>
+                                                    <td class="px-6 py-4">${(o.items||[]).length} items</td>
                                                     <td class="px-6 py-4 font-medium">${formatCurrency(orderTrueTotal(o, campaignOf(o)))}</td>
                                                     <td class="px-6 py-4">
                                                         <button onclick="toggleStatus('${o.id}', 'paid', ${!o.paid})" 
@@ -965,7 +983,7 @@
                                     <div class="space-y-2 text-sm">
                                         <div class="flex justify-between">
                                             <span class="text-secondary">Unit Size:</span>
-                                            <span class="font-medium">${p.unit}</span>
+                                            <span class="font-medium">${escapeHtml(p.unit)}</span>
                                         </div>
                                         <div class="flex justify-between">
                                             <span class="text-secondary">Default Price:</span>
@@ -1346,7 +1364,7 @@
                                                 <input type="checkbox" name="products" value="${p.id}" class="w-5 h-5 rounded" onchange="toggleProductItem(this)">
                                                 <div class="flex-1 min-w-0">
                                                     <p class="font-medium">${escapeHtml(p.name)}</p>
-                                                    <p class="text-sm text-secondary">${p.unit}</p>
+                                                    <p class="text-sm text-secondary">${escapeHtml(p.unit)}</p>
                                                 </div>
                                                 <div class="w-32">
                                                     <input type="number" name="price_${p.id}" step="0.01" min="0" value="${p.price}" placeholder="Harga" class="w-full px-3 py-1.5 rounded border text-sm text-right">
@@ -1558,7 +1576,7 @@
                                         ${item.photo ? `<img src="${item.photo}" alt="${escapeHtml(item.name)}" class="w-16 h-16 object-cover rounded-lg flex-shrink-0">` : ''}
                                         <div class="flex-1">
                                             <p class="font-medium">${escapeHtml(item.name)}</p>
-                                            <p class="text-sm text-secondary">${item.unit} - ${formatCurrency(item.price)}</p>
+                                            <p class="text-sm text-secondary">${escapeHtml(item.unit)} - ${formatCurrency(item.price)}</p>
                                             ${itemSoldOut
                                                 ? `<p class="text-base font-semibold text-red-600 mt-1">Produk sudah habis.</p>`
                                                 : (label ? `<p class="text-base font-semibold text-orange-600 mt-1">${label}</p>` : '')}
@@ -1704,11 +1722,17 @@
                 buyerNotes: (fd.get('buyerNotes') || '').trim(),
                 paid: false, delivered: false
             };
-            await saveOrderAsync(order);
-            
+            try {
+                await saveOrderAsync(order);
+            } catch (e) {
+                if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Submit Order'; }
+                showToast('Gagal menyimpan pesanan. Coba lagi.');
+                return;
+            }
+
             // Buyer is done: release the Firebase connection to free a slot
             try { db.goOffline(); } catch (e) {}
-            
+
             showOrderConfirmation(order, seller, campaign);
         }
         
@@ -1747,12 +1771,14 @@
             order.id = generateOrderId();
             order.createdAt = new Date().toISOString();
             cache.orders.push(order);
-            return db.ref('orders/' + order.id).set(order).catch(() => {
+            return db.ref('orders/' + order.id).set(order).catch((e) => {
                 showToast('Warning: order may not have been saved. Check your connection.');
+                throw e;
             });
         }
 
         let buyerSessionTimeout = null;
+        let buyerCountdownInterval = null;
         const BUYER_SESSION_MS = 8 * 60 * 1000; // 8 minutes idle before connection is released
 
         function armBuyerSession(campaignId) {
@@ -1778,17 +1804,18 @@
         }
 
         function startBuyerTimer(campaignId, wasNotStarted) {
-            const interval = setInterval(() => {
+            if (buyerCountdownInterval) clearInterval(buyerCountdownInterval);
+            buyerCountdownInterval = setInterval(() => {
                 const campaigns = getCampaigns();
                 const campaign = campaigns.find(c => c.id === campaignId);
                 
-                if (!campaign) { clearInterval(interval); return; }
+                if (!campaign) { clearInterval(buyerCountdownInterval); return; }
                 
                 const notStarted = !!(campaign.startTime && new Date(campaign.startTime).getTime() > Date.now());
                 
                 // Transition: order window just opened -> unlock the form automatically
                 if (wasNotStarted && !notStarted) {
-                    clearInterval(interval);
+                    clearInterval(buyerCountdownInterval);
                     showToast('Pemesanan sudah dibuka!');
                     renderBuyerView(campaignId);
                     return;
@@ -1797,7 +1824,7 @@
                 const tl = getTimeLeft(notStarted ? campaign.startTime : campaign.endTime);
                 
                 if (tl.expired) {
-                    clearInterval(interval);
+                    clearInterval(buyerCountdownInterval);
                     showToast(notStarted ? 'Pemesanan sudah dibuka!' : 'Campaign has ended!');
                     renderBuyerView(campaignId);
                     return;
@@ -1813,6 +1840,7 @@
 
         function showOrderConfirmation(order, seller, campaign) {
             if (buyerSessionTimeout) clearTimeout(buyerSessionTimeout);
+            if (buyerCountdownInterval) { clearInterval(buyerCountdownInterval); buyerCountdownInterval = null; }
             pendingShare = { order, seller, campaign };
             document.getElementById('mainContent').innerHTML = `
                 <div class="fade-in max-w-xl mx-auto">
@@ -2004,9 +2032,9 @@
                         <td class="px-4 py-3">${c ? escapeHtml(c.name) : escapeHtml(o.campaignName || 'Unknown')}${isAdmin() ? `<div class="text-xs text-secondary">${escapeHtml(sellerNameOf(o.ownerId))}</div>` : ''}</td>
                         <td class="px-4 py-3 font-medium ${cancelled ? 'line-through' : ''}">${escapeHtml(o.buyerName)}</td>
                         <td class="px-4 py-3">
-                            <button onclick="toggleDetails(this)" class="text-blue-500 hover:underline text-sm">${o.items.length} items (view)</button>
+                            <button onclick="toggleDetails(this)" class="text-blue-500 hover:underline text-sm">${(o.items||[]).length} items (view)</button>
                             <div class="hidden mt-2 p-3 bg-secondary rounded text-sm">
-                                ${o.items.map(i => `<div class="flex justify-between ${i.cancelled ? 'line-through text-secondary' : ''}"><span>${escapeHtml(i.name)} x${i.quantity}${i.cancelled ? ' (dibatalkan)' : ''}</span><span>${formatCurrency(lineSubtotal(i, c))}</span></div>`).join('')}
+                                ${(o.items||[]).map(i => `<div class="flex justify-between ${i.cancelled ? 'line-through text-secondary' : ''}"><span>${escapeHtml(i.name)} x${i.quantity}${i.cancelled ? ' (dibatalkan)' : ''}</span><span>${formatCurrency(lineSubtotal(i, c))}</span></div>`).join('')}
                                 <div class="mt-2 pt-2 border-t border-gray-300 dark:border-gray-600 space-y-1">
                                     <div><span class="text-secondary">Email:</span> ${escapeHtml(o.buyerEmail || '-')}</div>
                                     <div><span class="text-secondary">HP:</span> ${escapeHtml(o.buyerPhone || '-')}</div>
@@ -2043,7 +2071,7 @@
         function confirmCancelOrder(id) {
             const o = cache.orders.find(o => o.id === id);
             if (!o) return;
-            const active = o.items.map((it, pos) => ({ it, pos })).filter(x => !x.it.cancelled);
+            const active = (o.items||[]).map((it, pos) => ({ it, pos })).filter(x => !x.it.cancelled);
             showModal(`
                 <h3 class="text-lg font-semibold mb-2">Batalkan Order / Item</h3>
                 <p class="text-secondary text-sm mb-4">Pilih item yang dibatalkan. Stok item itu dikembalikan dan total order dihitung ulang. Centang semua = batalkan seluruh order. Item tetap tersimpan untuk histori.</p>
@@ -2166,6 +2194,12 @@
             document.getElementById('ordersTableBody').innerHTML = renderOrdersRows(orders, campaigns);
         }
 
+        // 2.2: prevent CSV/Excel formula injection — prefix a quote if a cell starts with = + - @ tab CR.
+        function sanitizeForExcel(v) {
+            const s = String(v == null ? '' : v);
+            return /^[=+\-@\t\r]/.test(s) ? "'" + s : s;
+        }
+
         // Builds flat row-per-SKU rows: one row per product per order (analytics-ready)
         function buildSkuRows(orders, campaigns) {
             const rows = [];
@@ -2173,18 +2207,18 @@
                 const c = campaigns.find(c => c.id === o.campaignId);
                 (o.items || []).filter(i => !i.cancelled).forEach(i => {
                     rows.push([
-                        c ? c.name : (o.campaignName || 'Unknown'),
+                        sanitizeForExcel(c ? c.name : (o.campaignName || 'Unknown')),
                         o.id,
                         formatDate(o.createdAt),
-                        o.buyerName,
-                        o.buyerEmail || '',
-                        o.buyerPhone || '',
-                        o.buyerAddress || '',
-                        o.buyerNotes || '',
-                        i.name,
-                        i.unit || '',
+                        sanitizeForExcel(o.buyerName),
+                        sanitizeForExcel(o.buyerEmail || ''),
+                        sanitizeForExcel(o.buyerPhone || ''),
+                        sanitizeForExcel(o.buyerAddress || ''),
+                        sanitizeForExcel(o.buyerNotes || ''),
+                        sanitizeForExcel(i.name),
+                        sanitizeForExcel(i.unit || ''),
                         i.quantity,
-                        (c && c.items && c.items[i.idx] ? c.items[i.idx].price : i.price),
+                        (i.price || 0),
                         lineSubtotal(i, c),
                         orderTrueTotal(o, c),
                         o.paid ? 'Yes' : 'No',
