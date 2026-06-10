@@ -781,9 +781,13 @@
         }
 
         // --- Ganti Password (logged-in user) ---
-        // The user's own campaigns that are still running (not archived).
+        // The user's own campaigns that can still receive orders — matches the "Active" badge
+        // on the campaign card: not archived, not manually closed, and not past its end time.
+        // (Closed/expired campaigns no longer take buyers, so their payment snapshot is moot.)
         function activeOwnCampaigns() {
-            return getCampaigns().filter(c => c.ownerId === currentUser.userId && !c.archived);
+            return getCampaigns().filter(c =>
+                c.ownerId === currentUser.userId &&
+                !c.archived && !c.closed && !getTimeLeft(c.endTime).expired);
         }
         // Active campaigns whose embedded seller snapshot differs from the current profile.
         function divergentCampaigns() {
