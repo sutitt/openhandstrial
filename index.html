@@ -1073,6 +1073,7 @@
 
         let campaignFilter = 'current';
         let campaignSort = 'recent';
+        let campaignTimerInterval = null;
         function setCampaignSort(v) { campaignSort = v; renderCampaigns(); }
         function renderCampaigns(filter) {
             if (!currentUser) { renderLanding(); return; }
@@ -1159,9 +1160,9 @@
                                                 </div>
                                                 <div class="mt-3 text-sm">
                                                     ${isActive ? `
-                                                        <div class="flex items-center gap-2 ${tl.d === 0 && tl.h < 1 ? 'timer-urgent text-red-500' : ''}">
+                                                        <div class="flex items-center gap-2 campaign-timer-wrap ${tl.d === 0 && tl.h < 1 ? 'timer-urgent text-red-500' : ''}" data-end="${c.endTime}">
                                                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                                                            <span class="font-mono">${tl.d > 0 ? tl.d + 'd ' : ''}${pad(tl.h)}:${pad(tl.m)}:${pad(tl.s)}</span>
+                                                            <span class="font-mono campaign-timer">${tl.d > 0 ? tl.d + 'd ' : ''}${pad(tl.h)}:${pad(tl.m)}:${pad(tl.s)}</span>
                                                         </div>
                                                     ` : (closed && !expired) ? `<span class="text-orange-600">Ditutup manual oleh sales</span>`
                                                        : `<span class="text-red-500">Closed on ${formatDate(c.endTime)}</span>`}
@@ -1184,6 +1185,27 @@
                     `}
                 </div>
             `;
+            startCampaignTimers();
+        }
+
+        // Live countdown on the Campaigns page: re-renders each timer every second.
+        function startCampaignTimers() {
+            if (campaignTimerInterval) { clearInterval(campaignTimerInterval); campaignTimerInterval = null; }
+            if (!document.querySelectorAll('.campaign-timer-wrap').length) return;
+            campaignTimerInterval = setInterval(() => {
+                const els = document.querySelectorAll('.campaign-timer-wrap');
+                if (!els.length) { clearInterval(campaignTimerInterval); campaignTimerInterval = null; return; }
+                let anyExpired = false;
+                els.forEach(wrap => {
+                    const tl = getTimeLeft(wrap.dataset.end);
+                    if (tl.expired) { anyExpired = true; return; }
+                    const span = wrap.querySelector('.campaign-timer');
+                    if (span) span.textContent = `${tl.d > 0 ? tl.d + 'd ' : ''}${pad(tl.h)}:${pad(tl.m)}:${pad(tl.s)}`;
+                    if (tl.d === 0 && tl.h < 1) wrap.classList.add('timer-urgent', 'text-red-500');
+                });
+                // A campaign just expired -> refresh the list so its status flips to Closed.
+                if (anyExpired) { clearInterval(campaignTimerInterval); campaignTimerInterval = null; renderCampaigns(); }
+            }, 1000);
         }
 
         function toggleCampaignClosed(id, val) {
@@ -1647,7 +1669,8 @@
             // Purchase limits
             for (const it of items) {
                 if (it.maxPerItem != null && it.quantity > it.maxPerItem) {
-                    showToast(`Maksimal ${it.maxPerItem} ${it.unit} untuk ${it.name}`);
+                    const unitTxt = (it.unit && !/^\s*\d/.test(it.unit)) ? ' ' + it.unit : '';
+                    showToast(`Maksimal ${it.maxPerItem}${unitTxt} untuk ${it.name}`);
                     return;
                 }
             }
