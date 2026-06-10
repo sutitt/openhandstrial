@@ -214,8 +214,9 @@
 
                 if (campaignId) {
                     // Buyer view: no login needed; load only this campaign.
-                    await loadBuyerCampaign(campaignId);
                     renderNavigation();
+                    renderBuyerLoading();
+                    await loadBuyerCampaign(campaignId);
                     renderBuyerView(campaignId);
                     return;
                 }
@@ -266,15 +267,8 @@
         // Buyer: load ONLY their campaign (light; conserves connections).
         async function loadBuyerCampaign(cid) {
             if (!localStorage.getItem(KEYS.PRODUCTS)) localStorage.setItem(KEYS.PRODUCTS, '[]');
-            // D3: buyers need an (anonymous) auth session so security rules allow them
-            // to read the campaign + create an order. Skip if already logged in (e.g. a
-            // salesperson previewing their own link keeps their session).
-            if (!auth.currentUser) {
-                await Promise.race([
-                    auth.signInAnonymously().catch(() => {}),
-                    new Promise(resolve => setTimeout(resolve, 8000))
-                ]);
-            }
+            // 2c: a single campaign is publicly readable (security rules) — no auth needed at load,
+            // so the form appears instantly. Anonymous sign-in is deferred to submit time.
             await Promise.race([
                 db.ref('campaigns/' + cid).once('value').then(s => {
                     const c = s.val();
@@ -293,16 +287,17 @@
         async function loadSalesData() {
             detachLive(); // drop any listeners from a previous session before re-attaching
             if (!localStorage.getItem(KEYS.PRODUCTS)) localStorage.setItem(KEYS.PRODUCTS, '[]');
-            // Admin reads ALL orders; sales reads only their own (owner-scoped, per security rules).
+            // Admin reads ALL campaigns/orders; sales reads only their own (owner-scoped, per security rules).
+            const campaignsRef = isAdmin() ? db.ref('campaigns') : db.ref('campaigns').orderByChild('ownerId').equalTo(currentUser.userId);
             const ordersRef = isAdmin() ? db.ref('orders') : db.ref('orders').orderByChild('ownerId').equalTo(currentUser.userId);
             await Promise.race([
                 Promise.all([
-                    db.ref('campaigns').once('value').then(s => { cache.campaigns = snapToArray(s); }),
+                    campaignsRef.once('value').then(s => { cache.campaigns = snapToArray(s); }),
                     ordersRef.once('value').then(s => { cache.orders = snapToArray(s); })
                 ]),
                 new Promise(resolve => setTimeout(resolve, 8000))
             ]);
-            attachLive(db.ref('campaigns'), s => { cache.campaigns = snapToArray(s); });
+            attachLive(campaignsRef, s => { cache.campaigns = snapToArray(s); });
             attachLive(ordersRef, s => { cache.orders = snapToArray(s); });
         }
 
@@ -667,6 +662,7 @@
                     <button onclick="renderCatalog()" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 dark:hover:bg-gray-700 text-sm font-medium transition">Products</button>
                     <button onclick="renderCampaigns()" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 dark:hover:bg-gray-700 text-sm font-medium transition">Campaigns</button>
                     ${isAdmin() ? `<button onclick="renderAddSales()" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 dark:hover:bg-gray-700 text-sm font-medium transition">Tambah Sales</button>` : ''}
+                    <button onclick="renderProfile()" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 dark:hover:bg-gray-700 text-sm font-medium transition">Profil Saya</button>
                     <button onclick="renderChangePassword()" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 dark:hover:bg-gray-700 text-sm font-medium transition">Ganti Password</button>
                     <button onclick="logout()" class="px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-500 text-sm font-medium transition">Logout</button>
                 `;
@@ -785,6 +781,85 @@
         }
 
         // --- Ganti Password (logged-in user) ---
+        function renderProfile() {
+            if (!currentUser) { renderLogin(); return; }
+            const u = currentUser;
+            document.getElementById('mainContent').innerHTML = `
+                <div class="max-w-md mx-auto card rounded-xl p-8 fade-in">
+                    <h2 class="text-2xl font-bold mb-1 text-center">Profil Saya</h2>
+                    <p class="text-sm text-secondary mb-6 text-center">User ID: ${escapeHtml(u.userId)} · Peran: ${escapeHtml(u.role)}</p>
+                    <form id="profileForm" class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Nama Tampilan</label>
+                            <input type="text" name="name" required value="${escapeHtml(u.name || '')}" class="w-full px-4 py-2 rounded-lg border">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Nama Bank</label>
+                            <input type="text" name="bankName" value="${escapeHtml(u.bankName || '')}" placeholder="cth: BCA" class="w-full px-4 py-2 rounded-lg border">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Nomor Rekening</label>
+                            <input type="text" name="accountNumber" value="${escapeHtml(u.accountNumber || '')}" inputmode="numeric" class="w-full px-4 py-2 rounded-lg border">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Nama Pemilik Rekening</label>
+                            <input type="text" name="accountName" value="${escapeHtml(u.accountName || '')}" class="w-full px-4 py-2 rounded-lg border">
+                        </div>
+                        <button type="submit" class="w-full py-3 rounded-lg btn-primary text-white font-medium transition">Simpan Profil</button>
+                    </form>
+                    <div class="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+                        <p class="text-sm text-secondary mb-2">Perubahan otomatis dipakai campaign <b>baru</b>. Untuk campaign yang masih berjalan:</p>
+                        <button onclick="applyProfileToActiveCampaigns()" class="w-full py-2 rounded-lg bg-secondary hover:bg-gray-200 dark:hover:bg-gray-700 text-sm font-medium transition">Terapkan ke campaign aktif saya</button>
+                    </div>
+                </div>
+            `;
+            document.getElementById('profileForm').addEventListener('submit', handleSaveProfile);
+        }
+
+        async function handleSaveProfile(e) {
+            e.preventDefault();
+            const fd = new FormData(e.target);
+            const name = (fd.get('name') || '').trim();
+            if (!name) { showToast('Nama tidak boleh kosong'); return; }
+            // role + userId are intentionally NOT written here (locked by security rules too).
+            const fields = {
+                name,
+                bankName: (fd.get('bankName') || '').trim(),
+                accountNumber: (fd.get('accountNumber') || '').trim(),
+                accountName: (fd.get('accountName') || '').trim()
+            };
+            const btn = e.target.querySelector('button[type="submit"]');
+            if (btn) { btn.disabled = true; btn.textContent = 'Menyimpan...'; }
+            try {
+                await db.ref('users/' + currentUser.userId).update(fields);
+                Object.assign(currentUser, fields);
+                showToast('Profil tersimpan. Berlaku untuk campaign baru.');
+                renderNavigation();
+                renderProfile();
+            } catch (err) {
+                if (btn) { btn.disabled = false; btn.textContent = 'Simpan Profil'; }
+                showToast('Gagal menyimpan profil. Coba lagi.');
+            }
+        }
+
+        // Option B: push the current profile (name + bank) into the seller snapshot of the
+        // user's own non-archived campaigns, so in-flight campaigns reflect the new details.
+        async function applyProfileToActiveCampaigns() {
+            const own = getCampaigns().filter(c => c.ownerId === currentUser.userId && !c.archived);
+            if (!own.length) { showToast('Tidak ada campaign aktif untuk diperbarui.'); return; }
+            const seller = {
+                sellerName: currentUser.name || '',
+                sellerBankName: currentUser.bankName || '',
+                sellerAccountNumber: currentUser.accountNumber || '',
+                sellerAccountName: currentUser.accountName || ''
+            };
+            let ok = 0;
+            for (const c of own) {
+                try { await db.ref('campaigns/' + c.id).update(seller); Object.assign(c, seller); ok++; } catch (e) {}
+            }
+            showToast(`Info pembayaran diperbarui di ${ok} campaign.`);
+        }
+
         function renderChangePassword() {
             if (!currentUser) { renderLogin(); return; }
             document.getElementById('mainContent').innerHTML = `
@@ -1459,6 +1534,16 @@
             renderCampaigns();
         }
 
+        function renderBuyerLoading() {
+            const main = document.getElementById('mainContent');
+            if (!main) return;
+            main.innerHTML = `
+                <div class="fade-in max-w-xl mx-auto text-center py-20">
+                    <div class="inline-block w-10 h-10 border-4 border-gray-300 dark:border-gray-600 border-t-blue-500 rounded-full animate-spin"></div>
+                    <p class="text-secondary mt-4">Memuat campaign…</p>
+                </div>`;
+        }
+
         function renderBuyerView(campaignId) {
             // Buyers must not reach the salesperson dashboard — no nav links at all
             document.getElementById('navLinks').innerHTML = '';
@@ -1700,6 +1785,17 @@
             
             // Lock the button: a double tap must not create two orders
             if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Memproses...'; }
+
+            // 2c: buyers authenticate lazily (deferred from page load). Ensure an auth session
+            // + live connection now, before the stock write + order create.
+            try {
+                try { db.goOnline(); } catch (e) {}
+                if (!auth.currentUser) await auth.signInAnonymously();
+            } catch (err) {
+                if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Submit Order'; }
+                showToast('Gagal menyiapkan sesi. Coba lagi.');
+                return;
+            }
             
             // Reserve stock atomically (server-authoritative; safe against simultaneous buyers)
             const reserve = await reserveStock(campaign, items);
