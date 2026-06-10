@@ -287,16 +287,17 @@
             if (!localStorage.getItem(KEYS.PRODUCTS)) localStorage.setItem(KEYS.PRODUCTS, '[]');
             // D3: orders are read owner-scoped (security rules only permit this query).
             // Campaigns stay a full read (rules allow any authenticated user to read them).
-            const myOrders = db.ref('orders').orderByChild('ownerId').equalTo(currentUser.userId);
+            // Admin reads ALL orders; sales reads only their own (owner-scoped, per security rules).
+            const ordersRef = isAdmin() ? db.ref('orders') : db.ref('orders').orderByChild('ownerId').equalTo(currentUser.userId);
             await Promise.race([
                 Promise.all([
                     db.ref('campaigns').once('value').then(s => { cache.campaigns = snapToArray(s); }),
-                    myOrders.once('value').then(s => { cache.orders = snapToArray(s); })
+                    ordersRef.once('value').then(s => { cache.orders = snapToArray(s); })
                 ]),
                 new Promise(resolve => setTimeout(resolve, 8000))
             ]);
             db.ref('campaigns').on('value', s => { cache.campaigns = snapToArray(s); });
-            myOrders.on('value', s => { cache.orders = snapToArray(s); });
+            ordersRef.on('value', s => { cache.orders = snapToArray(s); });
         }
 
         function getData(key) {
@@ -388,7 +389,7 @@
                 .catch(() => showToast('Warning: failed to sync campaign. Check your connection.'));
         }
         function deleteCampaign(id, userId) {
-            const target = cache.campaigns.find(c => c.id === id && c.ownerId === userId);
+            const target = cache.campaigns.find(c => c.id === id && (c.ownerId === userId || isAdmin()));
             if (!target) return;
             cache.campaigns = cache.campaigns.filter(c => c.id !== id);
             db.ref('campaigns/' + id).remove()
@@ -400,6 +401,40 @@
         function getCampaignOrders(campaignId) { return getOrders().filter(o => o.campaignId === campaignId); }
         function getUserOrders(userId) {
             return getOrders().filter(o => o.ownerId === userId);
+        }
+
+        // Admin oversight: admins see ALL campaigns/orders; an optional sales filter narrows by ownerId.
+        let adminSalesFilter = 'all';
+        function setAdminSalesFilter(v, view) {
+            adminSalesFilter = v || 'all';
+            if (view === 'tracker') renderMasterTracker();
+            else renderCampaigns();
+        }
+        function getVisibleCampaigns() {
+            let list = isAdmin() ? getCampaigns() : getUserCampaigns(currentUser.userId);
+            if (isAdmin() && adminSalesFilter !== 'all') list = list.filter(c => c.ownerId === adminSalesFilter);
+            return list;
+        }
+        function getVisibleOrders() {
+            let list = isAdmin() ? getOrders() : getUserOrders(currentUser.userId);
+            if (isAdmin() && adminSalesFilter !== 'all') list = list.filter(o => o.ownerId === adminSalesFilter);
+            return list;
+        }
+        // Map ownerId -> display name, derived from campaigns' embedded sellerName (no /users read needed).
+        function salesNameMap() {
+            const m = {};
+            getCampaigns().forEach(c => { if (c.ownerId) m[c.ownerId] = c.sellerName || c.ownerId; });
+            getOrders().forEach(o => { if (o.ownerId && !m[o.ownerId]) m[o.ownerId] = o.ownerId; });
+            return m;
+        }
+        function sellerNameOf(ownerId) { return salesNameMap()[ownerId] || ownerId || '-'; }
+        function adminSalesFilterSelect(view) {
+            if (!isAdmin()) return '';
+            const m = salesNameMap();
+            const opts = Object.keys(m).sort((a, b) => m[a].localeCompare(m[b]))
+                .map(id => `<option value="${id}" ${adminSalesFilter === id ? 'selected' : ''}>${escapeHtml(m[id])}</option>`).join('');
+            return `<select onchange="setAdminSalesFilter(this.value, '${view}')" class="px-4 py-2 rounded-lg border">
+                <option value="all" ${adminSalesFilter === 'all' ? 'selected' : ''}>Semua sales</option>${opts}</select>`;
         }
         function generateOrderId() {
             const d = new Date();
@@ -422,7 +457,7 @@
         // --- Batch E1: management helpers ---
         // Set a flag (archived / closed) on a campaign the current user owns
         function setCampaignFlag(id, field, value) {
-            const c = cache.campaigns.find(c => c.id === id && c.ownerId === currentUser.userId);
+            const c = cache.campaigns.find(c => c.id === id && (c.ownerId === currentUser.userId || isAdmin()));
             if (!c) return;
             c[field] = value;
             db.ref('campaigns/' + id + '/' + field).set(value)
@@ -432,7 +467,7 @@
         // Edit remaining stock live. Baseline (stockInitial) follows the new stock so the
         // scarcity label stays sensible: units already sold stay fixed, new remaining = new baseline.
         function saveStockEdits(campaignId, newStocks) {
-            const c = cache.campaigns.find(c => c.id === campaignId && c.ownerId === currentUser.userId);
+            const c = cache.campaigns.find(c => c.id === campaignId && (c.ownerId === currentUser.userId || isAdmin()));
             if (!c) return;
             (c.items || []).forEach((item, idx) => {
                 if (!(idx in newStocks)) return;
@@ -779,8 +814,8 @@
         function renderDashboard() {
             if (!currentUser) { renderLanding(); return; }
             
-            const campaigns = getUserCampaigns(currentUser.userId);
-            const orders = getUserOrders(currentUser.userId);
+            const campaigns = getVisibleCampaigns();
+            const orders = getVisibleOrders();
             const now = new Date().getTime();
             const active = campaigns.filter(c => new Date(c.endTime).getTime() > now);
             const live = orders.filter(o => !o.cancelled);
@@ -853,7 +888,7 @@
                                             const c = campaigns.find(c => c.id === o.campaignId);
                                             return `
                                                 <tr class="hover:bg-secondary/50">
-                                                    <td class="px-6 py-4">${c ? escapeHtml(c.name) : 'Unknown'}</td>
+                                                    <td class="px-6 py-4">${c ? escapeHtml(c.name) : escapeHtml(o.campaignName || 'Unknown')}</td>
                                                     <td class="px-6 py-4">${escapeHtml(o.buyerName)}</td>
                                                     <td class="px-6 py-4">${o.items.length} items</td>
                                                     <td class="px-6 py-4 font-medium">${formatCurrency(orderTrueTotal(o, campaignOf(o)))}</td>
@@ -1042,7 +1077,7 @@
         function renderCampaigns(filter) {
             if (!currentUser) { renderLanding(); return; }
             campaignFilter = filter || campaignFilter || 'current';
-            const all = getUserCampaigns(currentUser.userId);
+            const all = getVisibleCampaigns();
             const campaigns = all.filter(c => campaignFilter === 'archived' ? c.archived
                 : campaignFilter === 'all' ? true
                 : !c.archived);
@@ -1083,6 +1118,7 @@
                             <option value="revenue" ${campaignSort === 'revenue' ? 'selected' : ''}>Revenue tertinggi</option>
                             <option value="name" ${campaignSort === 'name' ? 'selected' : ''}>Nama A–Z</option>
                         </select>
+                        ${adminSalesFilterSelect('campaigns')}
                     </div>
                     
                     ${campaigns.length === 0 ? `
@@ -1114,6 +1150,7 @@
                                                 <div class="flex items-center gap-2 mb-2">
                                                     <h3 class="font-semibold text-lg">${escapeHtml(c.name)}</h3>
                                                     <span class="px-2 py-0.5 rounded text-xs font-medium ${status.cls}">${status.t}</span>
+                                                    ${isAdmin() ? `<span class="text-xs text-secondary">• ${escapeHtml(sellerNameOf(c.ownerId))}</span>` : ''}
                                                 </div>
                                                 <div class="flex flex-wrap gap-4 text-sm text-secondary">
                                                     <span>📦 ${c.items.length} products</span>
@@ -1137,6 +1174,7 @@
                                                 ${!archived && !expired ? `<button onclick="toggleCampaignClosed('${c.id}', ${!closed})" class="px-3 py-1.5 rounded-lg bg-orange-500/10 hover:bg-orange-500/20 text-orange-600 text-sm font-medium transition">${closed ? 'Buka Lagi' : 'Tutup'}</button>` : ''}
                                                 ${archived ? `<button onclick="toggleCampaignArchived('${c.id}', false)" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 text-sm font-medium transition">Pulihkan</button>`
                                                     : (expired ? `<button onclick="toggleCampaignArchived('${c.id}', true)" class="px-3 py-1.5 rounded-lg bg-secondary hover:bg-gray-200 text-sm font-medium transition">Arsip</button>` : '')}
+                                                ${isAdmin() ? `<button onclick="confirmDeleteCampaign('${c.id}')" class="px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-600 text-sm font-medium transition">Hapus</button>` : ''}
                                             </div>
                                         </div>
                                     </div>
@@ -1161,7 +1199,7 @@
         }
 
         function showStockEditModal(campaignId) {
-            const c = getUserCampaigns(currentUser.userId).find(c => c.id === campaignId);
+            const c = getCampaigns().find(c => c.id === campaignId);
             if (!c) return;
             showModal(`
                 <h3 class="text-lg font-semibold mb-1">Edit Stok — ${escapeHtml(c.name)}</h3>
@@ -1203,12 +1241,15 @@
         }
 
         function confirmDeleteCampaign(id) {
+            const c = getCampaigns().find(c => c.id === id);
+            const nm = c ? c.name : id;
             showModal(`
-                <h3 class="text-lg font-semibold mb-4">Delete Campaign?</h3>
-                <p class="text-secondary mb-6">All associated orders will also be deleted.</p>
+                <h3 class="text-lg font-semibold mb-2">Hapus campaign?</h3>
+                <p class="text-secondary mb-2">"${escapeHtml(nm)}" akan dihapus permanen dan tidak bisa dikembalikan.</p>
+                <p class="text-secondary mb-6 text-sm">Order yang sudah masuk tetap tersimpan sebagai riwayat (tetap muncul di Tracker &amp; Excel).</p>
                 <div class="flex gap-2">
-                    <button onclick="closeModal()" class="flex-1 py-2 rounded-lg bg-secondary hover:bg-gray-200 transition">Cancel</button>
-                    <button onclick="doDeleteCampaign('${id}')" class="flex-1 py-2 rounded-lg bg-red-500 text-white font-medium hover:bg-red-600 transition">Delete</button>
+                    <button onclick="closeModal()" class="flex-1 py-2 rounded-lg bg-secondary hover:bg-gray-200 transition">Batal</button>
+                    <button onclick="doDeleteCampaign('${id}')" class="flex-1 py-2 rounded-lg bg-red-500 text-white font-medium hover:bg-red-600 transition">Hapus</button>
                 </div>
             `);
         }
@@ -1633,7 +1674,7 @@
             const seller = getSellerInfo(campaign);
             
             const order = {
-                campaignId, ownerId: campaign.ownerId, buyerName, items, total,
+                campaignId, ownerId: campaign.ownerId, campaignName: campaign.name, buyerName, items, total,
                 buyerEmail,
                 buyerPhone: countryCode + phoneDigits,
                 buyerAddress: (fd.get('buyerAddress') || '').trim(),
@@ -1839,8 +1880,8 @@
 
         function renderMasterTracker() {
             if (!currentUser) { renderLanding(); return; }
-            const campaigns = getUserCampaigns(currentUser.userId);
-            const orders = getUserOrders(currentUser.userId);
+            const campaigns = getVisibleCampaigns();
+            const orders = getVisibleOrders();
             const active = orders.filter(o => !o.cancelled);
             
             document.getElementById('mainContent').innerHTML = `
@@ -1873,6 +1914,7 @@
                             <option value="total_asc">Total terendah</option>
                             <option value="name">Nama A–Z</option>
                         </select>
+                        ${adminSalesFilterSelect('tracker')}
                     </div>
                     
                     <div class="mb-6 grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -1936,7 +1978,7 @@
                 return `
                     <tr class="hover:bg-secondary/50 ${cancelled ? 'opacity-60' : ''}">
                         <td class="px-4 py-3 font-mono text-sm">${o.id}${badge}</td>
-                        <td class="px-4 py-3">${c ? escapeHtml(c.name) : 'Unknown'}</td>
+                        <td class="px-4 py-3">${c ? escapeHtml(c.name) : escapeHtml(o.campaignName || 'Unknown')}${isAdmin() ? `<div class="text-xs text-secondary">${escapeHtml(sellerNameOf(o.ownerId))}</div>` : ''}</td>
                         <td class="px-4 py-3 font-medium ${cancelled ? 'line-through' : ''}">${escapeHtml(o.buyerName)}</td>
                         <td class="px-4 py-3">
                             <button onclick="toggleDetails(this)" class="text-blue-500 hover:underline text-sm">${o.items.length} items (view)</button>
@@ -2086,8 +2128,8 @@
         }
 
         function filterOrders() {
-            const campaigns = getUserCampaigns(currentUser.userId);
-            let orders = getUserOrders(currentUser.userId);
+            const campaigns = getVisibleCampaigns();
+            let orders = getVisibleOrders();
             const cid = (document.getElementById('campaignFilter') || {}).value || '';
             const status = (document.getElementById('statusFilter') || {}).value || '';
             const sort = (document.getElementById('orderSort') || {}).value || 'recent';
@@ -2108,7 +2150,7 @@
                 const c = campaigns.find(c => c.id === o.campaignId);
                 (o.items || []).filter(i => !i.cancelled).forEach(i => {
                     rows.push([
-                        c ? c.name : 'Unknown',
+                        c ? c.name : (o.campaignName || 'Unknown'),
                         o.id,
                         formatDate(o.createdAt),
                         o.buyerName,
@@ -2151,8 +2193,8 @@
         }
 
         function exportAllExcel() {
-            const orders = getUserOrders(currentUser.userId);
-            const campaigns = getUserCampaigns(currentUser.userId);
+            const orders = getVisibleOrders();
+            const campaigns = getVisibleCampaigns();
 
             if (orders.length === 0) { showToast('No orders to export'); return; }
 
