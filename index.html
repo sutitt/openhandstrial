@@ -210,6 +210,9 @@
         async function init() {
             try {
                 initTheme();
+                // Sales/admin sessions live in sessionStorage: a reload keeps you in, but closing
+                // the tab ends the session (re-login required). Pairs with the idle auto-logout below.
+                try { if (auth.setPersistence) await auth.setPersistence(firebase.auth.Auth.Persistence.SESSION); } catch (e) {}
                 const params = new URLSearchParams(window.location.search);
                 const campaignId = params.get('campaign');
 
@@ -243,8 +246,10 @@
                             await loadSalesData();
                             renderNavigation();
                             renderDashboard();
+                            startIdleWatch();
                         } else {
                             currentUser = null;
+                            stopIdleWatch();
                             renderNavigation();
                             renderLogin();
                         }
@@ -314,9 +319,81 @@
         }
 
         function logout() {
+            stopIdleWatch();
             detachLive();
             auth.signOut().catch(() => {});
             // onAuthStateChanged -> renderLogin
+        }
+
+        // --- Idle auto-disconnect / auto-logout for sales & admin sessions ---
+        // Stage 1 @ 5 min idle: drop the Firebase connection (stay logged in; reconnect on activity).
+        // Warning @ 14.5 min: "Akan log off otomatis…" with Cancel.
+        // Stage 2 @ 15 min idle (or on tab close, via SESSION persistence): full logout (re-login required).
+        const IDLE_DISCONNECT_MS = 5 * 60 * 1000;
+        const IDLE_WARN_MS = 14.5 * 60 * 1000;   // 30 s before logout
+        const IDLE_LOGOUT_MS = 15 * 60 * 1000;
+        const IDLE_EVENTS = ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart', 'click'];
+        let idleDisconnectT = null, idleWarnT = null, idleLogoutT = null;
+        let idleWatching = false, idleDisconnected = false, idleWarnShown = false, idleActivityTs = 0;
+
+        function clearIdleTimers() { clearTimeout(idleDisconnectT); clearTimeout(idleWarnT); clearTimeout(idleLogoutT); }
+        function resetIdleTimers() {
+            clearIdleTimers();
+            idleDisconnectT = setTimeout(idleStageDisconnect, IDLE_DISCONNECT_MS);
+            idleWarnT = setTimeout(idleStageWarn, IDLE_WARN_MS);
+            idleLogoutT = setTimeout(idleStageLogout, IDLE_LOGOUT_MS);
+        }
+        function reconnectIfIdleDropped() {
+            if (idleDisconnected) { idleDisconnected = false; try { db.goOnline(); } catch (e) {} loadSalesData(); }
+        }
+        function onIdleActivity() {
+            const now = Date.now();
+            if (now - idleActivityTs < 1000) return; // debounce: at most once/second
+            idleActivityTs = now;
+            if (idleWarnShown) { idleWarnShown = false; closeModal(); }
+            reconnectIfIdleDropped();
+            resetIdleTimers();
+        }
+        function startIdleWatch() {
+            if (idleWatching || !currentUser) return;
+            idleWatching = true; idleDisconnected = false;
+            IDLE_EVENTS.forEach(ev => document.addEventListener(ev, onIdleActivity, { passive: true }));
+            resetIdleTimers();
+        }
+        function stopIdleWatch() {
+            idleWatching = false; idleDisconnected = false; idleWarnShown = false;
+            clearIdleTimers();
+            IDLE_EVENTS.forEach(ev => document.removeEventListener(ev, onIdleActivity));
+        }
+        function idleStageDisconnect() {            // Stage 1: free the connection, stay logged in
+            if (!currentUser) return;
+            idleDisconnected = true;
+            detachLive();
+            try { db.goOffline(); } catch (e) {}
+        }
+        function idleStageWarn() {                  // 30 s warning before logout
+            if (!currentUser) return;
+            idleWarnShown = true;
+            showModal(`
+                <h3 class="text-lg font-semibold mb-2">Sesi akan berakhir</h3>
+                <p class="text-secondary mb-6">Akan log off otomatis karena tidak ada aktivitas. Klik Cancel untuk membatalkan.</p>
+                <div class="flex justify-end">
+                    <button onclick="cancelIdleLogout()" class="px-5 py-2 rounded-lg btn-primary text-white font-bold transition">Cancel</button>
+                </div>
+            `);
+        }
+        function cancelIdleLogout() {
+            idleWarnShown = false; closeModal();
+            idleActivityTs = Date.now();
+            reconnectIfIdleDropped();
+            resetIdleTimers();
+        }
+        function idleStageLogout() {                // Stage 2: full logout
+            if (!currentUser) return;
+            idleWarnShown = false; closeModal();
+            stopIdleWatch();
+            try { db.goOffline(); } catch (e) {}
+            logout();
         }
 
         function isAdmin() { return !!currentUser && currentUser.role === 'admin'; }
